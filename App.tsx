@@ -148,6 +148,15 @@ function pickGhost(players: Player[], groupId: string, blocked: string[] = []) {
 function syncGhosts(players: Player[], groups: Group[], current: Record<string, string | null> = {}, force = false) {
   const next: Record<string, string | null> = {};
   const used = new Set<string>();
+  const activeGroupSizes = groups
+    .map((group) => players.filter((player) => player.groupId === group.id).length)
+    .filter((size) => size > 0);
+  const mixedThreeAndFour = activeGroupSizes.includes(3) && activeGroupSizes.includes(4);
+
+  if (!mixedThreeAndFour) {
+    return next;
+  }
+
   groups.forEach((group) => {
     const members = players.filter((player) => player.groupId === group.id);
     if (members.length !== 3) {
@@ -304,15 +313,80 @@ function groupLabel(size: number) {
 
 function groupNote(size: number) {
   if (size === 3) {
-    return "Uses one drawn player for the whole round.";
+    return "3-ball groups use best 2 scores unless the field mixes 3s and 4s.";
   }
   if (size === 4) {
-    return "Complete group with no ghost needed.";
+    return "4-ball groups use the best 3 scores on each hole.";
   }
   if (size < 3) {
     return "Add more players to make this group valid.";
   }
   return "Too many players. Split this group before scoring.";
+}
+
+function groupSizeSummary(groups: Group[], players: Player[]) {
+  const sizes = groups
+    .map((group) => players.filter((player) => player.groupId === group.id).length)
+    .filter((size) => size > 0);
+  return {
+    allThree: sizes.length > 0 && sizes.every((size) => size === 3),
+    allFour: sizes.length > 0 && sizes.every((size) => size === 4),
+    mixedThreeAndFour: sizes.includes(3) && sizes.includes(4),
+  };
+}
+
+function countingScoresForGroup(groupSize: number, summary: ReturnType<typeof groupSizeSummary>) {
+  if (summary.mixedThreeAndFour) {
+    return groupSize >= 4 ? 3 : groupSize === 3 ? 3 : groupSize;
+  }
+  if (summary.allFour) {
+    return groupSize >= 4 ? 3 : groupSize;
+  }
+  if (summary.allThree) {
+    return groupSize === 3 ? 2 : groupSize;
+  }
+  if (groupSize >= 4) {
+    return 3;
+  }
+  if (groupSize === 3) {
+    return 2;
+  }
+  return groupSize;
+}
+
+function sumBestScores(points: number[], count: number) {
+  return [...points]
+    .sort((a, b) => b - a)
+    .slice(0, count)
+    .reduce((sum, value) => sum + value, 0);
+}
+
+function groupHoleTotal(
+  tees: TeeSet[],
+  members: Player[],
+  ghost: Player | null,
+  holeNumber: number,
+  scoresToCount: number,
+  includeGhost: boolean,
+) {
+  const points = members.map((player) => holePoints(player, holeForPlayer(tees, player, holeNumber)));
+  if (includeGhost && ghost) {
+    points.push(holePoints(ghost, holeForPlayer(tees, ghost, holeNumber)));
+  }
+  return sumBestScores(points, scoresToCount);
+}
+
+function groupRoundTotal(
+  tees: TeeSet[],
+  members: Player[],
+  ghost: Player | null,
+  scoresToCount: number,
+  includeGhost: boolean,
+) {
+  return defaultCourse.reduce(
+    (sum, hole) => sum + groupHoleTotal(tees, members, ghost, hole.number, scoresToCount, includeGhost),
+    0,
+  );
 }
 
 export default function App() {
@@ -432,6 +506,10 @@ export default function App() {
     () => Object.fromEntries(rankedPlayers.map((player) => [player.id, player])),
     [rankedPlayers],
   );
+  const scoringSummary = useMemo(
+    () => groupSizeSummary(round.groups, round.players),
+    [round.groups, round.players],
+  );
   const rankedGroups = useMemo(
     () =>
       round.groups
@@ -439,16 +517,14 @@ export default function App() {
           const members = rankedPlayers.filter((player) => player.groupId === group.id);
           const ghostId = round.ghosts[group.id];
           const ghost = ghostId ? playerMap[ghostId] ?? null : null;
-          const total =
-            members.reduce((sum, player) => sum + player.total, 0)
-            + (members.length === 3 && ghost ? ghost.total : 0);
-          const holeTotal =
-            members.reduce((sum, player) => sum + holePoints(player, holeForPlayer(round.tees, player, selectedHole)), 0)
-            + (members.length === 3 && ghost ? holePoints(ghost, holeForPlayer(round.tees, ghost, selectedHole)) : 0);
-          return { ...group, members, ghost, size: members.length, total, holeTotal };
+          const scoresToCount = countingScoresForGroup(members.length, scoringSummary);
+          const includeGhost = scoringSummary.mixedThreeAndFour && members.length === 3;
+          const total = groupRoundTotal(round.tees, members, ghost, scoresToCount, includeGhost);
+          const holeTotal = groupHoleTotal(round.tees, members, ghost, selectedHole, scoresToCount, includeGhost);
+          return { ...group, members, ghost, size: members.length, total, holeTotal, scoresToCount, includeGhost };
         })
         .sort((a, b) => b.total - a.total),
-    [playerMap, rankedPlayers, round.ghosts, round.groups, round.tees, selectedHole],
+    [playerMap, rankedPlayers, round.ghosts, round.groups, round.players, round.tees, scoringSummary, selectedHole],
   );
 
   const setRoster = (updater: (current: RoundState) => RoundState, forceGhostRedraw = false) => {
@@ -476,7 +552,7 @@ export default function App() {
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
           <Text style={styles.heroTitle}>Setup, scoring, and saved rounds in one app.</Text>
           <Text style={styles.heroCopy}>
-            Track individual Stableford points, compare mixed 3-balls and 4-balls, and use a round-long drawn player whenever a group only has three golfers.
+            Track individual Stableford points, compare mixed 3-balls and 4-balls, and score groups hole by hole using your rollup best-ball rules.
           </Text>
           <View style={styles.statRow}>
             <View style={styles.statCard}>
@@ -900,6 +976,7 @@ export default function App() {
                   : `${invalidGroups.length} group${invalidGroups.length === 1 ? "" : "s"} still need adjusting before scoring.`}
               </Text>
               <Text style={styles.noteText}>A 3-ball uses one drawn real player from the rest of the field for the whole round.</Text>
+              <Text style={styles.noteText}>If every group is a 3-ball, the team score is the best 2 Stableford scores per hole. If every group is a 4-ball, it is the best 3 per hole. Mixed fields give each 3-ball a ghost and still count the best 3 per hole.</Text>
             </View>
           </>
         ) : null}
@@ -946,22 +1023,36 @@ export default function App() {
               >
                 <Text style={styles.secondaryText}>Save round</Text>
               </Pressable>
-              <Pressable
-                onPress={() =>
-                  setRound((current) => ({
-                    ...current,
-                    ghosts: syncGhosts(current.players, current.groups, current.ghosts, true),
-                  }))
-                }
-                style={styles.primaryButton}
-              >
-                <Text style={styles.primaryText}>Redraw ghosts</Text>
-              </Pressable>
+              {scoringSummary.mixedThreeAndFour ? (
+                <Pressable
+                  onPress={() =>
+                    setRound((current) => ({
+                      ...current,
+                      ghosts: syncGhosts(current.players, current.groups, current.ghosts, true),
+                    }))
+                  }
+                  style={styles.primaryButton}
+                >
+                  <Text style={styles.primaryText}>Redraw ghosts</Text>
+                </Pressable>
+              ) : (
+                <View style={styles.primaryButton}>
+                  <Text style={styles.primaryText}>
+                    {scoringSummary.allThree ? "Best 2 count" : scoringSummary.allFour ? "Best 3 count" : "Scoring rules set"}
+                  </Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Group leaderboard</Text>
-              <Text style={styles.sectionSubtitle}>3-balls add one drawn player&apos;s full-round score.</Text>
+              <Text style={styles.sectionSubtitle}>
+                {scoringSummary.mixedThreeAndFour
+                  ? "Mixed field: 4-balls count best 3, and 3-balls use a ghost so they also count best 3."
+                  : scoringSummary.allThree
+                    ? "All 3-balls: each group counts the best 2 Stableford scores on every hole."
+                    : "All 4-balls: each group counts the best 3 Stableford scores on every hole."}
+              </Text>
             </View>
 
             {rankedGroups.length === 0 ? (
@@ -976,7 +1067,7 @@ export default function App() {
                       <Text style={styles.rankNumber}>{index + 1}</Text>
                       <View>
                         <Text style={styles.itemTitle}>{group.name}</Text>
-                        <Text style={styles.meta}>{groupLabel(group.size)} • {group.holeTotal} points on hole {currentHole.number}</Text>
+                        <Text style={styles.meta}>{groupLabel(group.size)} • Best {group.scoresToCount} scores • {group.holeTotal} points on hole {currentHole.number}</Text>
                       </View>
                     </View>
                     <View style={styles.badge}>
@@ -990,12 +1081,12 @@ export default function App() {
                       <Text style={styles.itemValue}>{player.total} pts</Text>
                     </View>
                   ))}
-                  {group.size === 3 ? (
+                  {group.includeGhost ? (
                     <View style={styles.subCard}>
                       <Text style={styles.smallLabel}>Ghost player</Text>
                       <Text style={styles.itemTitle}>{group.ghost?.name ?? "No ghost drawn"}</Text>
                       <Text style={styles.meta}>
-                        {group.ghost ? `${group.ghost.total} Stableford points added to this group` : "Draw a player from the rest of the field"}
+                        {group.ghost ? `This mixed-field 3-ball counts ${group.ghost.name} as the ghost and takes the best 3 scores on each hole.` : "Draw a player from the rest of the field"}
                       </Text>
                       <Pressable
                         onPress={() =>
@@ -1016,7 +1107,11 @@ export default function App() {
                     </View>
                   ) : (
                     <View style={styles.infoBox}>
-                      <Text style={styles.infoText}>{groupNote(group.size)}</Text>
+                      <Text style={styles.infoText}>
+                        {group.size === 3
+                          ? `This 3-ball is counting the best ${group.scoresToCount} scores on each hole.`
+                          : `This 4-ball is counting the best ${group.scoresToCount} scores on each hole.`}
+                      </Text>
                     </View>
                   )}
                 </View>
@@ -1165,13 +1260,16 @@ export default function App() {
                   .map((player) => ({ ...player, total: totalPoints(player, saved.tees), done: completed(player, saved.tees) }))
                   .sort((a, b) => b.total - a.total);
                 const topPlayer = players[0];
+                const savedSummary = groupSizeSummary(saved.groups, saved.players);
                 const groupTotals = saved.groups
                   .map((group) => {
                     const members = players.filter((player) => player.groupId === group.id);
                     const ghost = saved.ghosts[group.id] ? players.find((player) => player.id === saved.ghosts[group.id]) ?? null : null;
+                    const scoresToCount = countingScoresForGroup(members.length, savedSummary);
+                    const includeGhost = savedSummary.mixedThreeAndFour && members.length === 3;
                     return {
                       ...group,
-                      total: members.reduce((sum, player) => sum + player.total, 0) + (members.length === 3 && ghost ? ghost.total : 0),
+                      total: groupRoundTotal(saved.tees, members, ghost, scoresToCount, includeGhost),
                     };
                   })
                   .sort((a, b) => b.total - a.total);
@@ -1199,7 +1297,8 @@ export default function App() {
 
         <View style={styles.noteCard}>
           <Text style={styles.noteText}>Stableford points are calculated from gross score, handicap, and stroke index.</Text>
-          <Text style={styles.noteText}>A 3-ball keeps the same drawn player for the whole round, never hole by hole.</Text>
+          <Text style={styles.noteText}>Group scores are counted hole by hole using best-ball rules: best 3 from a 4-ball, best 2 from an all-3-ball field, or best 3 with a ghost when 3s and 4s are mixed.</Text>
+          <Text style={styles.noteText}>A ghost player stays with that 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
         </View>
       </ScrollView>
