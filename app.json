@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Fairway",
+    "name": "Your Stableford Rollup calculator",
     "slug": "fairway-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -13,7 +13,12 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.fairway",
+      "buildNumber": "1",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {

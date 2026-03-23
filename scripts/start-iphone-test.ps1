@@ -4,6 +4,7 @@ param(
 )
 
 $portsToClear = @(8081, $Port) | Sort-Object -Unique
+$processesToStop = @{}
 
 foreach ($portToClear in $portsToClear) {
   $listeners = netstat -ano | Select-String ":$portToClear" | Where-Object { $_.Line -match "LISTENING" }
@@ -14,12 +15,12 @@ foreach ($portToClear in $portsToClear) {
 
     if ($pidText -match "^\d+$") {
       $pidValue = [int]$pidText
+      if (-not $processesToStop.ContainsKey($pidValue)) {
+        $processesToStop[$pidValue] = [System.Collections.Generic.List[int]]::new()
+      }
 
-      try {
-        Stop-Process -Id $pidValue -Force -ErrorAction Stop
-        Write-Host "Stopped process $pidValue on port $portToClear"
-      } catch {
-        Write-Host "Could not stop process $pidValue on port $portToClear"
+      if (-not $processesToStop[$pidValue].Contains($portToClear)) {
+        $processesToStop[$pidValue].Add($portToClear)
       }
     }
   }
@@ -28,9 +29,25 @@ foreach ($portToClear in $portsToClear) {
 $expoArgs = @("expo", "start", "--tunnel", "--clear", "--port", "$Port")
 
 if ($DryRun) {
+  foreach ($entry in $processesToStop.GetEnumerator() | Sort-Object Name) {
+    $ports = ($entry.Value | Sort-Object -Unique) -join ", "
+    Write-Host "Would stop process $($entry.Key) on port(s) $ports"
+  }
+
   Write-Host "Dry run:"
   Write-Host "npx $($expoArgs -join ' ')"
   exit 0
+}
+
+foreach ($entry in $processesToStop.GetEnumerator()) {
+  $ports = ($entry.Value | Sort-Object -Unique) -join ", "
+
+  try {
+    Stop-Process -Id $entry.Key -Force -ErrorAction Stop
+    Write-Host "Stopped process $($entry.Key) on port(s) $ports"
+  } catch {
+    Write-Host "Could not stop process $($entry.Key) on port(s) $ports"
+  }
 }
 
 & npx @expoArgs

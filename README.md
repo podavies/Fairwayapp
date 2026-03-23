@@ -23,6 +23,12 @@ npm run ios
 npm run android
 ```
 
+For a fresh iPhone test session that clears stale Expo listeners and starts a new tunnel on port `8082`, run:
+
+```powershell
+npm run test:iphone
+```
+
 ## Next build steps
 
 - Add navigation and separate screens

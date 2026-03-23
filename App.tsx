@@ -1,7 +1,8 @@
 import { StatusBar } from "expo-status-bar";
 import * as FileSystem from "expo-file-system/legacy";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Modal,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -45,6 +46,8 @@ type RoundState = {
 };
 type SavedRound = RoundState & { savedAt: string };
 type Tab = "setup" | "live" | "saved";
+type ScoreEntryMode = "group" | "player";
+type LiveSection = "groups" | "players" | "entry";
 
 const defaultCourse: Hole[] = [
   { number: 1, name: "Home Wood", yardage: 279, par: 4, strokeIndex: 12 },
@@ -102,11 +105,15 @@ const strokes = (handicap: number, strokeIndex: number) =>
   Math.floor(handicap / 18) + (strokeIndex <= handicap % 18 ? 1 : 0);
 const stableford = (gross: number, par: number, shots: number) =>
   Math.max(0, 2 + par - (gross - shots));
-const scoreEntered = (value: string | undefined) => Number(value) > 0;
-const holePoints = (player: Player, hole: Hole) =>
-  scoreEntered(player.scores[hole.number])
-    ? stableford(Number(player.scores[hole.number]), hole.par, strokes(player.handicap, hole.strokeIndex))
-    : 0;
+const BLOB_SCORE = "B";
+const scoreEntered = (value: string | undefined) => value === BLOB_SCORE || Number(value) > 0;
+const holePoints = (player: Player, hole: Hole) => {
+  const value = player.scores[hole.number];
+  if (!scoreEntered(value) || value === BLOB_SCORE) {
+    return 0;
+  }
+  return stableford(Number(value), hole.par, strokes(player.handicap, hole.strokeIndex));
+};
 function teeForPlayer(tees: TeeSet[], teeId: string) {
   return tees.find((tee) => tee.id === teeId) ?? tees[0];
 }
@@ -121,10 +128,49 @@ const totalPoints = (player: Player, tees: TeeSet[]) =>
     (sum, hole) => sum + holePoints(player, hole),
     0,
   );
+const playerHolePoints = (player: Player, tees: TeeSet[]) =>
+  (teeForPlayer(tees, player.teeId)?.course ?? defaultCourse).map((hole) => holePoints(player, hole));
 const completed = (player: Player, tees: TeeSet[]) =>
   (teeForPlayer(tees, player.teeId)?.course ?? defaultCourse).filter((hole) =>
     scoreEntered(player.scores[hole.number]),
   ).length;
+
+function countbackTotals(points: number[]) {
+  return [9, 6, 3, 1].map((holes) => points.slice(-holes).reduce((sum, value) => sum + value, 0));
+}
+
+function compareCountback(aPoints: number[], bPoints: number[]) {
+  const aTotals = countbackTotals(aPoints);
+  const bTotals = countbackTotals(bPoints);
+
+  for (let index = 0; index < aTotals.length; index += 1) {
+    if (bTotals[index] !== aTotals[index]) {
+      return bTotals[index] - aTotals[index];
+    }
+  }
+
+  return 0;
+}
+
+function comparePlayers(
+  a: Player & { total: number; done: number; holePoints: number[] },
+  b: Player & { total: number; done: number; holePoints: number[] },
+) {
+  if (b.total !== a.total) {
+    return b.total - a.total;
+  }
+
+  if (b.done !== a.done) {
+    return b.done - a.done;
+  }
+
+  const countback = compareCountback(a.holePoints, b.holePoints);
+  if (countback !== 0) {
+    return countback;
+  }
+
+  return a.name.localeCompare(b.name);
+}
 
 function shuffle<T>(items: T[]) {
   const clone = [...items];
@@ -391,7 +437,7 @@ function groupRoundTotal(
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("setup");
-  const [round, setRound] = useState<RoundState>(() => starterRound());
+  const [round, setRound] = useState<RoundState>(() => blankRound());
   const [savedRounds, setSavedRounds] = useState<SavedRound[]>([]);
   const [selectedHole, setSelectedHole] = useState(1);
   const [draftName, setDraftName] = useState("");
@@ -399,9 +445,14 @@ export default function App() {
   const [draftGroupId, setDraftGroupId] = useState("");
   const [draftTeeId, setDraftTeeId] = useState("white");
   const [selectedTeeId, setSelectedTeeId] = useState("white");
+  const [courseSetupExpanded, setCourseSetupExpanded] = useState(false);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [scoreEntryMode, setScoreEntryMode] = useState<ScoreEntryMode>("group");
+  const [scoreEntryPlayerId, setScoreEntryPlayerId] = useState<string | null>(null);
+  const [liveSection, setLiveSection] = useState<LiveSection>("entry");
   const [storageReady, setStorageReady] = useState(false);
   const [storageMessage, setStorageMessage] = useState(
-    STORAGE_URI ? "Loading saved rounds on this device..." : "Local storage is unavailable here.",
+    STORAGE_URI ? "Loading saved rounds on this device. Current round resets on app open..." : "Local storage is unavailable here.",
   );
 
   useEffect(() => {
@@ -415,12 +466,8 @@ export default function App() {
         const info = await FileSystem.getInfoAsync(STORAGE_URI);
         if (info.exists) {
           const parsed = JSON.parse(await FileSystem.readAsStringAsync(STORAGE_URI)) as {
-            activeRound?: RoundState;
             savedRounds?: SavedRound[];
           };
-          if (!cancelled && parsed.activeRound) {
-            setRound(normalizeRound(parsed.activeRound));
-          }
           if (!cancelled && parsed.savedRounds) {
             setSavedRounds(
               parsed.savedRounds.map((item) => ({
@@ -431,7 +478,7 @@ export default function App() {
           }
         }
         if (!cancelled) {
-          setStorageMessage("Rounds save locally on this device.");
+          setStorageMessage("Saved rounds stay on this device. Current round resets each time the app opens.");
           setStorageReady(true);
         }
       } catch {
@@ -493,15 +540,54 @@ export default function App() {
     }
   }, [draftTeeId, round.tees, selectedTeeId]);
 
+  useEffect(() => {
+    if (selectedPlayerId && !round.players.some((player) => player.id === selectedPlayerId)) {
+      setSelectedPlayerId(null);
+    }
+  }, [round.players, selectedPlayerId]);
+
+  useEffect(() => {
+    if (scoreEntryPlayerId && !round.players.some((player) => player.id === scoreEntryPlayerId)) {
+      setScoreEntryPlayerId(null);
+    }
+  }, [round.players, scoreEntryPlayerId]);
+
   const selectedTee = teeForPlayer(round.tees, selectedTeeId);
   const currentHole = selectedTee?.course.find((hole) => hole.number === selectedHole) ?? selectedTee?.course[0] ?? defaultCourse[0];
+  const selectedPlayer = useMemo(
+    () => round.players.find((player) => player.id === selectedPlayerId) ?? null,
+    [round.players, selectedPlayerId],
+  );
+  const selectedPlayerTee = selectedPlayer ? teeForPlayer(round.tees, selectedPlayer.teeId) : null;
+  const selectedPlayerCourse = selectedPlayerTee?.course ?? defaultCourse;
   const rankedPlayers = useMemo(
     () =>
       [...round.players]
-        .map((player) => ({ ...player, total: totalPoints(player, round.tees), done: completed(player, round.tees) }))
-        .sort((a, b) => (b.total !== a.total ? b.total - a.total : b.done - a.done)),
+        .map((player) => ({
+          ...player,
+          total: totalPoints(player, round.tees),
+          done: completed(player, round.tees),
+          holePoints: playerHolePoints(player, round.tees),
+        }))
+        .sort(comparePlayers),
     [round.players, round.tees],
   );
+  useEffect(() => {
+    if (!rankedPlayers.length) {
+      setScoreEntryPlayerId(null);
+      return;
+    }
+
+    if (!scoreEntryPlayerId || !rankedPlayers.some((player) => player.id === scoreEntryPlayerId)) {
+      setScoreEntryPlayerId(rankedPlayers[0].id);
+    }
+  }, [rankedPlayers, scoreEntryPlayerId]);
+
+  const scoreEntryPlayer = useMemo(
+    () => rankedPlayers.find((player) => player.id === scoreEntryPlayerId) ?? rankedPlayers[0] ?? null,
+    [rankedPlayers, scoreEntryPlayerId],
+  );
+  const scoreEntryCourse = scoreEntryPlayer ? teeForPlayer(round.tees, scoreEntryPlayer.teeId)?.course ?? defaultCourse : defaultCourse;
   const playerMap = useMemo(
     () => Object.fromEntries(rankedPlayers.map((player) => [player.id, player])),
     [rankedPlayers],
@@ -543,6 +629,103 @@ export default function App() {
   });
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
+  const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupEntryPlayers = useMemo(
+    () => round.groups.flatMap((group) => round.players.filter((player) => player.groupId === group.id)),
+    [round.groups, round.players],
+  );
+  const groupEntryKeys = useMemo(
+    () => groupEntryPlayers.map((player) => `group:${selectedHole}:${player.id}`),
+    [groupEntryPlayers, selectedHole],
+  );
+  const playerEntryKeys = useMemo(
+    () => (scoreEntryPlayer ? scoreEntryCourse.map((hole) => `player:${scoreEntryPlayer.id}:${hole.number}`) : []),
+    [scoreEntryCourse, scoreEntryPlayer],
+  );
+
+  const updatePlayerScore = (playerId: string, holeNumber: number, value: string) => {
+    setRound((current) => ({
+      ...current,
+      players: current.players.map((currentPlayer) =>
+        currentPlayer.id === playerId
+          ? { ...currentPlayer, scores: { ...currentPlayer.scores, [holeNumber]: value.replace(/[^0-9]/g, "").slice(0, 2) } }
+          : currentPlayer,
+      ),
+    }));
+  };
+
+  const toggleBlobScore = (playerId: string, holeNumber: number, orderedKeys: string[], currentKey: string) => {
+    const currentValue = round.players.find((player) => player.id === playerId)?.scores[holeNumber];
+    const nextValue = currentValue === BLOB_SCORE ? "" : BLOB_SCORE;
+    updatePlayerScore(playerId, holeNumber, nextValue);
+
+    if (nextValue === BLOB_SCORE) {
+      const currentIndex = orderedKeys.indexOf(currentKey);
+      const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
+      focusNextInput(nextKey, true);
+    }
+  };
+
+  useEffect(
+    () => () => {
+      if (focusTimerRef.current) {
+        clearTimeout(focusTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const focusNextInput = (nextKey: string | undefined, immediate = false) => {
+    if (focusTimerRef.current) {
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
+
+    if (!nextKey) {
+      return;
+    }
+
+    const focus = () => {
+      inputRefs.current[nextKey]?.focus();
+    };
+
+    if (immediate) {
+      focus();
+      return;
+    }
+
+    focusTimerRef.current = setTimeout(focus, 500);
+  };
+
+  const handleScoreInputChange = (playerId: string, holeNumber: number, value: string, orderedKeys: string[], currentKey: string) => {
+    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 2);
+    updatePlayerScore(playerId, holeNumber, sanitized);
+
+    if (!sanitized) {
+      if (focusTimerRef.current) {
+        clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
+      }
+      return;
+    }
+
+    const currentIndex = orderedKeys.indexOf(currentKey);
+    const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
+    focusNextInput(nextKey, sanitized.length >= 2);
+  };
+
+  const clearCurrentRound = () => {
+    setRound(blankRound());
+    setSelectedHole(1);
+    setSelectedPlayerId(null);
+    setScoreEntryPlayerId(null);
+    setScoreEntryMode("group");
+    setSelectedTeeId("white");
+    setCourseSetupExpanded(false);
+    setLiveSection("entry");
+    setTab("setup");
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -624,11 +807,13 @@ export default function App() {
             <View style={styles.card}>
               <View style={styles.rowBetween}>
                 <Text style={styles.cardTitle}>Course setup</Text>
-                <Text style={styles.meta}>
-                  {selectedTee.name} • {totalYardageValue} yds • Par {totalParValue} • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
-                </Text>
+                <Pressable onPress={() => setCourseSetupExpanded((current) => !current)} style={styles.smallButton}>
+                  <Text style={styles.smallButtonText}>{courseSetupExpanded ? "Hide holes" : "Show holes"}</Text>
+                </Pressable>
               </View>
-              <Text style={styles.sectionSubtitle}>Edit the par and stroke index for each tee set.</Text>
+              <Text style={styles.sectionSubtitle}>
+                {selectedTee.name} • {totalYardageValue} yds • Par {totalParValue} • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
+              </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                 {round.tees.map((tee) => {
                   const active = selectedTeeId === tee.id;
@@ -643,104 +828,111 @@ export default function App() {
                   );
                 })}
               </ScrollView>
-              {selectedTee.course.map((hole, index) => (
-                <View key={hole.number} style={styles.courseRow}>
-                  <View style={styles.courseLabelWrap}>
-                    <Text style={styles.itemTitle}>Hole {hole.number}</Text>
-                    <Text style={styles.meta}>{hole.name}</Text>
-                  </View>
-                  <View style={styles.courseInputWrap}>
-                    <Text style={styles.smallLabel}>Yds</Text>
-                    <TextInput
-                      value={String(hole.yardage)}
-                      onChangeText={(value) =>
-                        setRound((current) => ({
-                          ...current,
-                          tees: current.tees.map((tee) =>
-                            tee.id === selectedTeeId
-                              ? {
-                                  ...tee,
-                                  course: tee.course.map((currentHole, holeIndex) =>
-                                    holeIndex === index
-                                      ? {
-                                          ...currentHole,
-                                          yardage: Math.max(1, Number(value.replace(/[^0-9]/g, "").slice(0, 3) || currentHole.yardage)),
-                                        }
-                                      : currentHole,
-                                  ),
-                                }
-                              : tee,
-                          ),
-                        }))
-                      }
-                      keyboardType="number-pad"
-                      placeholder="350"
-                      placeholderTextColor="#8a877f"
-                      style={styles.courseInput}
-                    />
-                  </View>
-                  <View style={styles.courseInputWrap}>
-                    <Text style={styles.smallLabel}>Par</Text>
-                    <TextInput
-                      value={String(hole.par)}
-                      onChangeText={(value) =>
-                        setRound((current) => ({
-                          ...current,
-                          tees: current.tees.map((tee) =>
-                            tee.id === selectedTeeId
-                              ? {
-                                  ...tee,
-                                  course: tee.course.map((currentHole, holeIndex) =>
-                                    holeIndex === index
-                                      ? {
-                                          ...currentHole,
-                                          par: Math.min(6, Math.max(3, Number(value.replace(/[^0-9]/g, "").slice(0, 1) || currentHole.par))),
-                                        }
-                                      : currentHole,
-                                  ),
-                                }
-                              : tee,
-                          ),
-                        }))
-                      }
-                      keyboardType="number-pad"
-                      placeholder="4"
-                      placeholderTextColor="#8a877f"
-                      style={styles.courseInput}
-                    />
-                  </View>
-                  <View style={styles.courseInputWrap}>
-                    <Text style={styles.smallLabel}>SI</Text>
-                    <TextInput
-                      value={String(hole.strokeIndex)}
-                      onChangeText={(value) =>
-                        setRound((current) => ({
-                          ...current,
-                          tees: current.tees.map((tee) =>
-                            tee.id === selectedTeeId
-                              ? {
-                                  ...tee,
-                                  course: tee.course.map((currentHole, holeIndex) =>
-                                    holeIndex === index
-                                      ? {
-                                          ...currentHole,
-                                          strokeIndex: Math.min(18, Math.max(1, Number(value.replace(/[^0-9]/g, "").slice(0, 2) || currentHole.strokeIndex))),
-                                        }
-                                      : currentHole,
-                                  ),
-                                }
-                              : tee,
-                          ),
-                        }))
-                      }
-                      keyboardType="number-pad"
-                      placeholder="1"
-                      placeholderTextColor="#8a877f"
-                      style={styles.courseInput}
-                    />
-                  </View>
-                </View>
-              ))}
+              {courseSetupExpanded ? (
+                <>
+                  <Text style={styles.sectionSubtitle}>Edit yardage, par, and stroke index for each hole on the selected tee.</Text>
+                  {selectedTee.course.map((hole, index) => (
+                    <View key={hole.number} style={styles.courseRow}>
+                      <View style={styles.courseLabelWrap}>
+                        <Text style={styles.itemTitle}>Hole {hole.number}</Text>
+                        <Text style={styles.meta}>{hole.name}</Text>
+                      </View>
+                      <View style={styles.courseInputWrap}>
+                        <Text style={styles.smallLabel}>Yds</Text>
+                        <TextInput
+                          value={String(hole.yardage)}
+                          onChangeText={(value) =>
+                            setRound((current) => ({
+                              ...current,
+                              tees: current.tees.map((tee) =>
+                                tee.id === selectedTeeId
+                                  ? {
+                                      ...tee,
+                                      course: tee.course.map((currentHole, holeIndex) =>
+                                        holeIndex === index
+                                          ? {
+                                              ...currentHole,
+                                              yardage: Math.max(1, Number(value.replace(/[^0-9]/g, "").slice(0, 3) || currentHole.yardage)),
+                                            }
+                                          : currentHole,
+                                      ),
+                                    }
+                                  : tee,
+                              ),
+                            }))
+                          }
+                          keyboardType="number-pad"
+                          placeholder="350"
+                          placeholderTextColor="#8a877f"
+                          style={styles.courseInput}
+                        />
+                      </View>
+                      <View style={styles.courseInputWrap}>
+                        <Text style={styles.smallLabel}>Par</Text>
+                        <TextInput
+                          value={String(hole.par)}
+                          onChangeText={(value) =>
+                            setRound((current) => ({
+                              ...current,
+                              tees: current.tees.map((tee) =>
+                                tee.id === selectedTeeId
+                                  ? {
+                                      ...tee,
+                                      course: tee.course.map((currentHole, holeIndex) =>
+                                        holeIndex === index
+                                          ? {
+                                              ...currentHole,
+                                              par: Math.min(6, Math.max(3, Number(value.replace(/[^0-9]/g, "").slice(0, 1) || currentHole.par))),
+                                            }
+                                          : currentHole,
+                                      ),
+                                    }
+                                  : tee,
+                              ),
+                            }))
+                          }
+                          keyboardType="number-pad"
+                          placeholder="4"
+                          placeholderTextColor="#8a877f"
+                          style={styles.courseInput}
+                        />
+                      </View>
+                      <View style={styles.courseInputWrap}>
+                        <Text style={styles.smallLabel}>SI</Text>
+                        <TextInput
+                          value={String(hole.strokeIndex)}
+                          onChangeText={(value) =>
+                            setRound((current) => ({
+                              ...current,
+                              tees: current.tees.map((tee) =>
+                                tee.id === selectedTeeId
+                                  ? {
+                                      ...tee,
+                                      course: tee.course.map((currentHole, holeIndex) =>
+                                        holeIndex === index
+                                          ? {
+                                              ...currentHole,
+                                              strokeIndex: Math.min(18, Math.max(1, Number(value.replace(/[^0-9]/g, "").slice(0, 2) || currentHole.strokeIndex))),
+                                            }
+                                          : currentHole,
+                                      ),
+                                    }
+                                  : tee,
+                              ),
+                            }))
+                          }
+                          keyboardType="number-pad"
+                          placeholder="1"
+                          placeholderTextColor="#8a877f"
+                          style={styles.courseInput}
+                        />
+                      </View>
+                    </View>
+                  ))}
+                </>
+              ) : (
+                <Text style={styles.meta}>Course details are collapsed to keep setup shorter. Tap `Show holes` when you want to edit all 18.</Text>
+              )}
             </View>
 
             <View style={styles.card}>
@@ -988,26 +1180,38 @@ export default function App() {
               <Text style={styles.sectionSubtitle}>{formatDate(round.date)} • Live Stableford and group totals</Text>
             </View>
 
-            <View style={styles.summaryCard}>
-              <Text style={styles.smallLabel}>Leading player</Text>
-              <Text style={styles.summaryTitle}>{rankedPlayers[0]?.name ?? "No scores yet"}</Text>
-              <Text style={styles.meta}>
-                {rankedPlayers[0]
-                  ? `${rankedPlayers[0].total} points through ${rankedPlayers[0].done} holes`
-                  : "Start entering scores to build the leaderboard"}
-              </Text>
+            <View style={styles.tabRow}>
+              <Pressable onPress={() => setLiveSection("groups")} style={[styles.tabButton, liveSection === "groups" && styles.tabButtonActive]}>
+                <Text style={[styles.tabText, liveSection === "groups" && styles.tabTextActive]}>Groups</Text>
+              </Pressable>
+              <Pressable onPress={() => setLiveSection("players")} style={[styles.tabButton, liveSection === "players" && styles.tabButtonActive]}>
+                <Text style={[styles.tabText, liveSection === "players" && styles.tabTextActive]}>Players</Text>
+              </Pressable>
+              <Pressable onPress={() => setLiveSection("entry")} style={[styles.tabButton, liveSection === "entry" && styles.tabButtonActive]}>
+                <Text style={[styles.tabText, liveSection === "entry" && styles.tabTextActive]}>Entry</Text>
+              </Pressable>
             </View>
 
-            <View style={styles.summaryCard}>
-              <Text style={styles.smallLabel}>Leading group</Text>
-              <Text style={styles.summaryTitle}>{rankedGroups[0]?.name ?? "No group result yet"}</Text>
-              <Text style={styles.meta}>{rankedGroups[0] ? `${rankedGroups[0].total} group points` : "Set up the field first"}</Text>
-            </View>
-
-            <View style={styles.summaryCard}>
-              <Text style={styles.smallLabel}>Selected tee view</Text>
-              <Text style={styles.summaryTitle}>{selectedTee.name}</Text>
-              <Text style={styles.meta}>{totalYardageValue} yards • Course Rating {selectedTee.courseRating} • Slope {selectedTee.slopeRating}</Text>
+            <View style={styles.card}>
+              <Text style={styles.smallLabel}>Live snapshot</Text>
+              <View style={styles.rowBetween}>
+                <Text style={styles.itemText}>Leading player</Text>
+                <Text style={styles.itemValue}>
+                  {rankedPlayers[0] ? `${rankedPlayers[0].name} • ${rankedPlayers[0].total} pts` : "No scores yet"}
+                </Text>
+              </View>
+              <View style={styles.rowBetween}>
+                <Text style={styles.itemText}>Leading group</Text>
+                <Text style={styles.itemValue}>
+                  {rankedGroups[0] ? `${rankedGroups[0].name} • ${rankedGroups[0].total} pts` : "No group result yet"}
+                </Text>
+              </View>
+              <View style={styles.rowBetween}>
+                <Text style={styles.itemText}>Current view</Text>
+                <Text style={styles.itemValue}>
+                  {selectedTee.name} • Hole {currentHole.number} • {currentHole.yardage} yds
+                </Text>
+              </View>
             </View>
 
             <View style={styles.buttonRow}>
@@ -1044,187 +1248,323 @@ export default function App() {
               )}
             </View>
 
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Group leaderboard</Text>
-              <Text style={styles.sectionSubtitle}>
-                {scoringSummary.mixedThreeAndFour
-                  ? "Mixed field: 4-balls count best 3, and 3-balls use a ghost so they also count best 3."
-                  : scoringSummary.allThree
-                    ? "All 3-balls: each group counts the best 2 Stableford scores on every hole."
-                    : "All 4-balls: each group counts the best 3 Stableford scores on every hole."}
-              </Text>
-            </View>
+            <Pressable onPress={clearCurrentRound} style={styles.smallButton}>
+              <Text style={styles.smallButtonText}>Clear current round</Text>
+            </Pressable>
 
-            {rankedGroups.length === 0 ? (
-              <View style={styles.card}>
-                <Text style={styles.meta}>There are no players in the active round yet.</Text>
-              </View>
-            ) : (
-              rankedGroups.map((group, index) => (
-                <View key={group.id} style={styles.card}>
-                  <View style={styles.rankRow}>
-                    <View style={styles.rankLeft}>
-                      <Text style={styles.rankNumber}>{index + 1}</Text>
-                      <View>
-                        <Text style={styles.itemTitle}>{group.name}</Text>
-                        <Text style={styles.meta}>{groupLabel(group.size)} • Best {group.scoresToCount} scores • {group.holeTotal} points on hole {currentHole.number}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.badge}>
-                      <Text style={styles.badgeValue}>{group.total}</Text>
-                      <Text style={styles.badgeLabel}>pts</Text>
-                    </View>
-                  </View>
-                  {group.members.map((player) => (
-                    <View key={player.id} style={styles.rowBetween}>
-                      <Text style={styles.itemText}>{player.name}</Text>
-                      <Text style={styles.itemValue}>{player.total} pts</Text>
-                    </View>
-                  ))}
-                  {group.includeGhost ? (
-                    <View style={styles.subCard}>
-                      <Text style={styles.smallLabel}>Ghost player</Text>
-                      <Text style={styles.itemTitle}>{group.ghost?.name ?? "No ghost drawn"}</Text>
-                      <Text style={styles.meta}>
-                        {group.ghost ? `This mixed-field 3-ball counts ${group.ghost.name} as the ghost and takes the best 3 scores on each hole.` : "Draw a player from the rest of the field"}
-                      </Text>
-                      <Pressable
-                        onPress={() =>
-                          setRound((current) => {
-                            const blocked = Object.entries(current.ghosts)
-                              .filter(([currentGroupId, ghostId]) => currentGroupId !== group.id && ghostId)
-                              .map(([, ghostId]) => ghostId as string);
-                            return {
-                              ...current,
-                              ghosts: { ...current.ghosts, [group.id]: pickGhost(current.players, group.id, blocked) },
-                            };
-                          })
-                        }
-                        style={styles.primaryButton}
-                      >
-                        <Text style={styles.primaryText}>Draw ghost</Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <View style={styles.infoBox}>
-                      <Text style={styles.infoText}>
-                        {group.size === 3
-                          ? `This 3-ball is counting the best ${group.scoresToCount} scores on each hole.`
-                          : `This 4-ball is counting the best ${group.scoresToCount} scores on each hole.`}
-                      </Text>
-                    </View>
-                  )}
+            {liveSection === "groups" ? (
+              <>
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Group leaderboard</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    {scoringSummary.mixedThreeAndFour
+                      ? "Mixed field: 4-balls count best 3, and 3-balls use a ghost so they also count best 3."
+                      : scoringSummary.allThree
+                        ? "All 3-balls: each group counts the best 2 Stableford scores on every hole."
+                        : "All 4-balls: each group counts the best 3 Stableford scores on every hole."}
+                  </Text>
                 </View>
-              ))
-            )}
 
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Individual leaderboard</Text>
-              <Text style={styles.sectionSubtitle}>Ranked by each player&apos;s Stableford total.</Text>
-            </View>
-
-            <View style={styles.card}>
-              {rankedPlayers.length === 0 ? (
-                <Text style={styles.meta}>Add players before scoring begins.</Text>
-              ) : (
-                rankedPlayers.map((player, index) => (
-                  <View key={player.id} style={styles.rankRow}>
-                    <View style={styles.rankLeft}>
-                      <Text style={styles.rankNumber}>{index + 1}</Text>
-                      <View>
-                        <Text style={styles.itemTitle}>{player.name}</Text>
-                        <Text style={styles.meta}>
-                          {round.groups.find((group) => group.id === player.groupId)?.name ?? "Group"} • {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • {player.done}/18 holes
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={styles.badge}>
-                      <Text style={styles.badgeValue}>{player.total}</Text>
-                      <Text style={styles.badgeLabel}>pts</Text>
-                    </View>
+                {rankedGroups.length === 0 ? (
+                  <View style={styles.card}>
+                    <Text style={styles.meta}>There are no players in the active round yet.</Text>
                   </View>
-                ))
-              )}
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Hole entry</Text>
-              <Text style={styles.sectionSubtitle}>Enter gross scores and calculate points live.</Text>
-            </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-              {selectedTee.course.map((hole) => {
-                const active = hole.number === selectedHole;
-                return (
-                  <Pressable key={hole.number} onPress={() => setSelectedHole(hole.number)} style={[styles.holeChip, active && styles.chipActive]}>
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{hole.number}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            <View style={styles.card}>
-              <View style={styles.subCard}>
-                <Text style={styles.itemTitle}>Hole {currentHole.number}</Text>
-                <Text style={styles.meta}>{currentHole.name}</Text>
-                <Text style={styles.meta}>
-                  Par, stroke index, and yardage can vary by tee. Current view: {selectedTee.name} • {currentHole.yardage} yds • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
-                </Text>
-              </View>
-              <View style={styles.subCard}>
-                {round.tees.map((tee) => {
-                  const teeHole = tee.course.find((hole) => hole.number === selectedHole) ?? tee.course[0];
-                  return (
-                    <View key={tee.id} style={styles.rowBetween}>
-                      <Text style={styles.itemText}>{tee.name} • {teeHole.name}</Text>
-                      <Text style={styles.itemValue}>{teeHole.yardage} yds • Par {teeHole.par} • SI {teeHole.strokeIndex}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-              {round.groups.map((group) => {
-                const members = round.players.filter((player) => player.groupId === group.id);
-                if (members.length === 0) {
-                  return null;
-                }
-                return (
-                  <View key={group.id} style={styles.subCard}>
-                    <Text style={styles.itemTitle}>{group.name}</Text>
-                    {members.map((player) => (
-                      <View key={player.id} style={styles.scoreRow}>
-                        <View style={styles.scoreInfo}>
-                          <Text style={styles.itemText}>{player.name}</Text>
-                          <Text style={styles.meta}>
-                            {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • Gets {strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex)} shot{strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex) === 1 ? "" : "s"}
-                          </Text>
+                ) : (
+                  rankedGroups.map((group, index) => (
+                    <View key={group.id} style={styles.card}>
+                      <View style={styles.rankRow}>
+                        <View style={styles.rankLeft}>
+                          <Text style={styles.rankNumber}>{index + 1}</Text>
+                          <View>
+                            <Text style={styles.itemTitle}>{group.name}</Text>
+                            <Text style={styles.meta}>{groupLabel(group.size)} • Best {group.scoresToCount} scores • {group.holeTotal} points on hole {currentHole.number}</Text>
+                          </View>
                         </View>
-                        <TextInput
-                          value={player.scores[currentHole.number] ?? ""}
-                          onChangeText={(value) =>
-                            setRound((current) => ({
-                              ...current,
-                              players: current.players.map((currentPlayer) =>
-                                currentPlayer.id === player.id
-                                  ? { ...currentPlayer, scores: { ...currentPlayer.scores, [currentHole.number]: value.replace(/[^0-9]/g, "").slice(0, 2) } }
-                                  : currentPlayer,
-                              ),
-                            }))
-                          }
-                          keyboardType="number-pad"
-                          placeholder="Score"
-                          placeholderTextColor="#8a877f"
-                          style={styles.scoreInput}
-                        />
-                        <View style={styles.pointsBox}>
-                          <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, selectedHole))}</Text>
+                        <View style={styles.badge}>
+                          <Text style={styles.badgeValue}>{group.total}</Text>
                           <Text style={styles.badgeLabel}>pts</Text>
                         </View>
                       </View>
-                    ))}
-                  </View>
-                );
-              })}
-            </View>
+                      {group.members.map((player) => (
+                        <View key={player.id} style={styles.rowBetween}>
+                          <Text style={styles.itemText}>{player.name}</Text>
+                          <Text style={styles.itemValue}>{player.total} pts</Text>
+                        </View>
+                      ))}
+                      {group.includeGhost ? (
+                        <View style={styles.subCard}>
+                          <Text style={styles.smallLabel}>Ghost player</Text>
+                          <Text style={styles.itemTitle}>{group.ghost?.name ?? "No ghost drawn"}</Text>
+                          <Text style={styles.meta}>
+                            {group.ghost ? `This mixed-field 3-ball counts ${group.ghost.name} as the ghost and takes the best 3 scores on each hole.` : "Draw a player from the rest of the field"}
+                          </Text>
+                          <Pressable
+                            onPress={() =>
+                              setRound((current) => {
+                                const blocked = Object.entries(current.ghosts)
+                                  .filter(([currentGroupId, ghostId]) => currentGroupId !== group.id && ghostId)
+                                  .map(([, ghostId]) => ghostId as string);
+                                return {
+                                  ...current,
+                                  ghosts: { ...current.ghosts, [group.id]: pickGhost(current.players, group.id, blocked) },
+                                };
+                              })
+                            }
+                            style={styles.primaryButton}
+                          >
+                            <Text style={styles.primaryText}>Draw ghost</Text>
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <View style={styles.infoBox}>
+                          <Text style={styles.infoText}>
+                            {group.size === 3
+                              ? `This 3-ball is counting the best ${group.scoresToCount} scores on each hole.`
+                              : `This 4-ball is counting the best ${group.scoresToCount} scores on each hole.`}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  ))
+                )}
+              </>
+            ) : null}
+
+            {liveSection === "players" ? (
+              <>
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Individual leaderboard</Text>
+                  <Text style={styles.sectionSubtitle}>Ranked by each player&apos;s Stableford total. Tap a points badge to open the full round.</Text>
+                </View>
+
+                <View style={styles.card}>
+                  {rankedPlayers.length === 0 ? (
+                    <Text style={styles.meta}>Add players before scoring begins.</Text>
+                  ) : (
+                    rankedPlayers.map((player, index) => (
+                      <View key={player.id} style={styles.rankRow}>
+                        <View style={styles.rankLeft}>
+                          <Text style={styles.rankNumber}>{index + 1}</Text>
+                          <View>
+                            <Text style={styles.itemTitle}>{player.name}</Text>
+                            <Text style={styles.meta}>
+                              {round.groups.find((group) => group.id === player.groupId)?.name ?? "Group"} • {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • {player.done}/18 holes
+                            </Text>
+                          </View>
+                        </View>
+                        <Pressable onPress={() => setSelectedPlayerId(player.id)} style={styles.badge}>
+                          <Text style={styles.badgeValue}>{player.total}</Text>
+                          <Text style={styles.badgeLabel}>pts</Text>
+                        </Pressable>
+                      </View>
+                    ))
+                  )}
+                </View>
+              </>
+            ) : null}
+
+            {liveSection === "entry" ? (
+              <>
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Hole entry</Text>
+                  <Text style={styles.sectionSubtitle}>Enter scores by group for one hole at a time, or switch to one player and fill the whole round in one go.</Text>
+                </View>
+
+                <View style={styles.tabRow}>
+                  <Pressable onPress={() => setScoreEntryMode("group")} style={[styles.tabButton, scoreEntryMode === "group" && styles.tabButtonActive]}>
+                    <Text style={[styles.tabText, scoreEntryMode === "group" && styles.tabTextActive]}>By group</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setScoreEntryMode("player")} style={[styles.tabButton, scoreEntryMode === "player" && styles.tabButtonActive]}>
+                    <Text style={[styles.tabText, scoreEntryMode === "player" && styles.tabTextActive]}>By player</Text>
+                  </Pressable>
+                </View>
+
+                {scoreEntryMode === "group" ? (
+                  <>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                      {selectedTee.course.map((hole) => {
+                        const active = hole.number === selectedHole;
+                        return (
+                          <Pressable key={hole.number} onPress={() => setSelectedHole(hole.number)} style={[styles.holeChip, active && styles.chipActive]}>
+                            <Text style={[styles.chipText, active && styles.chipTextActive]}>{hole.number}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+
+                    <View style={styles.card}>
+                      <View style={styles.subCard}>
+                        <Text style={styles.itemTitle}>Hole {currentHole.number}</Text>
+                        <Text style={styles.meta}>{currentHole.name}</Text>
+                        <Text style={styles.meta}>
+                          Par, stroke index, and yardage can vary by tee. Current view: {selectedTee.name} • {currentHole.yardage} yds • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
+                        </Text>
+                      </View>
+                      <View style={styles.subCard}>
+                        {round.tees.map((tee) => {
+                          const teeHole = tee.course.find((hole) => hole.number === selectedHole) ?? tee.course[0];
+                          return (
+                            <View key={tee.id} style={styles.rowBetween}>
+                              <Text style={styles.itemText}>{tee.name} • {teeHole.name}</Text>
+                              <Text style={styles.itemValue}>{teeHole.yardage} yds • Par {teeHole.par} • SI {teeHole.strokeIndex}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                      {round.groups.map((group) => {
+                        const members = round.players.filter((player) => player.groupId === group.id);
+                        if (members.length === 0) {
+                          return null;
+                        }
+                        return (
+                          <View key={group.id} style={styles.subCard}>
+                            <Text style={styles.itemTitle}>{group.name}</Text>
+                            {members.map((player) => (
+                              <View key={player.id} style={styles.scoreRow}>
+                                <View style={styles.scoreInfo}>
+                                  <Text style={styles.itemText}>{player.name}</Text>
+                                  <Text style={styles.meta}>
+                                    {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • Gets {strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex)} shot{strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex) === 1 ? "" : "s"}
+                                  </Text>
+                                </View>
+                            <TextInput
+                              ref={(ref) => {
+                                inputRefs.current[`group:${selectedHole}:${player.id}`] = ref;
+                              }}
+                              value={player.scores[currentHole.number] === BLOB_SCORE ? "" : player.scores[currentHole.number] ?? ""}
+                              onChangeText={(value) =>
+                                handleScoreInputChange(
+                                  player.id,
+                                  currentHole.number,
+                                  value,
+                                  groupEntryKeys,
+                                  `group:${selectedHole}:${player.id}`,
+                                )
+                              }
+                              keyboardType="number-pad"
+                              placeholder="Score"
+                              placeholderTextColor="#8a877f"
+                              maxLength={2}
+                              blurOnSubmit={false}
+                              style={styles.scoreInput}
+                            />
+                                <Pressable
+                                  onPress={() =>
+                                    toggleBlobScore(
+                                      player.id,
+                                      currentHole.number,
+                                      groupEntryKeys,
+                                      `group:${selectedHole}:${player.id}`,
+                                    )
+                                  }
+                                  style={[styles.blobButton, player.scores[currentHole.number] === BLOB_SCORE && styles.blobButtonActive]}
+                                >
+                                  <Text style={[styles.blobButtonText, player.scores[currentHole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
+                                    Blob
+                                  </Text>
+                                </Pressable>
+                                <Pressable onPress={() => setSelectedPlayerId(player.id)} style={styles.pointsBox}>
+                                  <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, selectedHole))}</Text>
+                                  <Text style={styles.badgeLabel}>pts</Text>
+                                </Pressable>
+                              </View>
+                            ))}
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                      {rankedPlayers.map((player) => {
+                        const active = player.id === scoreEntryPlayer?.id;
+                        return (
+                          <Pressable
+                            key={player.id}
+                            onPress={() => setScoreEntryPlayerId(player.id)}
+                            style={[styles.playerChip, active && styles.playerChipActive]}
+                          >
+                            <Text style={[styles.playerChipName, active && styles.playerChipNameActive]}>{player.name}</Text>
+                            <Text style={[styles.playerChipMeta, active && styles.playerChipMetaActive]}>
+                              {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • {player.total} pts
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+
+                    {scoreEntryPlayer ? (
+                      <View style={styles.card}>
+                        <View style={styles.subCard}>
+                          <Text style={styles.itemTitle}>{scoreEntryPlayer.name}</Text>
+                          <Text style={styles.meta}>
+                            {round.groups.find((group) => group.id === scoreEntryPlayer.groupId)?.name ?? "Group"} • {teeForPlayer(round.tees, scoreEntryPlayer.teeId)?.name ?? "Tee"} • HI {scoreEntryPlayer.handicap}
+                          </Text>
+                          <Text style={styles.meta}>
+                            Enter the whole round for one player here. Tap the points box to open the round summary view.
+                          </Text>
+                        </View>
+                        {scoreEntryCourse.map((hole) => (
+                          <View key={hole.number} style={styles.playerEntryRow}>
+                            <View style={styles.playerEntryInfo}>
+                              <Text style={styles.itemText}>Hole {hole.number} • {hole.name}</Text>
+                              <Text style={styles.meta}>
+                                Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds • Gets {strokes(scoreEntryPlayer.handicap, hole.strokeIndex)} shot{strokes(scoreEntryPlayer.handicap, hole.strokeIndex) === 1 ? "" : "s"}
+                              </Text>
+                            </View>
+                            <TextInput
+                              ref={(ref) => {
+                                inputRefs.current[`player:${scoreEntryPlayer.id}:${hole.number}`] = ref;
+                              }}
+                              value={scoreEntryPlayer.scores[hole.number] === BLOB_SCORE ? "" : scoreEntryPlayer.scores[hole.number] ?? ""}
+                              onChangeText={(value) =>
+                                handleScoreInputChange(
+                                  scoreEntryPlayer.id,
+                                  hole.number,
+                                  value,
+                                  playerEntryKeys,
+                                  `player:${scoreEntryPlayer.id}:${hole.number}`,
+                                )
+                              }
+                              keyboardType="number-pad"
+                              placeholder="Score"
+                              placeholderTextColor="#8a877f"
+                              maxLength={2}
+                              blurOnSubmit={false}
+                              style={styles.scoreInput}
+                            />
+                            <Pressable
+                              onPress={() =>
+                                toggleBlobScore(
+                                  scoreEntryPlayer.id,
+                                  hole.number,
+                                  playerEntryKeys,
+                                  `player:${scoreEntryPlayer.id}:${hole.number}`,
+                                )
+                              }
+                              style={[styles.blobButton, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonActive]}
+                            >
+                              <Text style={[styles.blobButtonText, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
+                                Blob
+                              </Text>
+                            </Pressable>
+                            <Pressable onPress={() => setSelectedPlayerId(scoreEntryPlayer.id)} style={styles.pointsBox}>
+                              <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
+                              <Text style={styles.badgeLabel}>pts</Text>
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <View style={styles.card}>
+                        <Text style={styles.meta}>Add players before using player-by-player score entry.</Text>
+                      </View>
+                    )}
+                  </>
+                )}
+              </>
+            ) : null}
           </>
         ) : null}
 
@@ -1257,8 +1597,13 @@ export default function App() {
             ) : (
               savedRounds.map((saved) => {
                 const players = [...saved.players]
-                  .map((player) => ({ ...player, total: totalPoints(player, saved.tees), done: completed(player, saved.tees) }))
-                  .sort((a, b) => b.total - a.total);
+                  .map((player) => ({
+                    ...player,
+                    total: totalPoints(player, saved.tees),
+                    done: completed(player, saved.tees),
+                    holePoints: playerHolePoints(player, saved.tees),
+                  }))
+                  .sort(comparePlayers);
                 const topPlayer = players[0];
                 const savedSummary = groupSizeSummary(saved.groups, saved.players);
                 const groupTotals = saved.groups
@@ -1298,10 +1643,72 @@ export default function App() {
         <View style={styles.noteCard}>
           <Text style={styles.noteText}>Stableford points are calculated from gross score, handicap, and stroke index.</Text>
           <Text style={styles.noteText}>Group scores are counted hole by hole using best-ball rules: best 3 from a 4-ball, best 2 from an all-3-ball field, or best 3 with a ghost when 3s and 4s are mixed.</Text>
+          <Text style={styles.noteText}>Individual ties are split by countback on the last 9 holes, then last 6, last 3, and final hole.</Text>
           <Text style={styles.noteText}>A ghost player stays with that 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
         </View>
       </ScrollView>
+      <Modal
+        visible={!!selectedPlayer}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedPlayerId(null)}
+      >
+        <View style={styles.modalScrim}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setSelectedPlayerId(null)} />
+          <View style={styles.modalCard}>
+            {selectedPlayer ? (
+              <>
+                <View style={styles.modalHeader}>
+                  <View style={styles.modalTitleWrap}>
+                    <Text style={styles.smallLabel}>Player round</Text>
+                    <Text style={styles.modalTitle}>{selectedPlayer.name}</Text>
+                    <Text style={styles.meta}>
+                      {round.groups.find((group) => group.id === selectedPlayer.groupId)?.name ?? "Group"} • {selectedPlayerTee?.name ?? "Tee"} • HI {selectedPlayer.handicap}
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => setSelectedPlayerId(null)} style={styles.modalCloseButton}>
+                    <Text style={styles.secondaryText}>Close</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.summaryCard}>
+                  <Text style={styles.summaryTitle}>{totalPoints(selectedPlayer, round.tees)} points</Text>
+                  <Text style={styles.meta}>
+                    {completed(selectedPlayer, round.tees)}/18 holes completed • Countback uses the last 9, 6, 3, then 1 hole.
+                  </Text>
+                </View>
+                <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+                  {selectedPlayerCourse.map((hole) => {
+                    const gross = selectedPlayer.scores[hole.number] ?? "";
+                    const points = holePoints(selectedPlayer, hole);
+                    return (
+                      <View key={hole.number} style={styles.modalHoleRow}>
+                        <View style={styles.modalHoleLeft}>
+                          <View style={styles.modalHoleNumber}>
+                            <Text style={styles.modalHoleNumberText}>{hole.number}</Text>
+                          </View>
+                          <View style={styles.courseLabelWrap}>
+                            <Text style={styles.itemText}>{hole.name}</Text>
+                            <Text style={styles.meta}>Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds</Text>
+                          </View>
+                        </View>
+                        <View style={styles.modalStat}>
+                          <Text style={styles.modalStatLabel}>Gross</Text>
+                          <Text style={styles.modalStatValue}>{gross === BLOB_SCORE ? "Blob" : gross || "-"}</Text>
+                        </View>
+                        <View style={styles.modalStat}>
+                          <Text style={styles.modalStatLabel}>Pts</Text>
+                          <Text style={styles.modalStatValue}>{gross ? points : "-"}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1364,9 +1771,37 @@ const styles = StyleSheet.create({
   holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e6dfcf", alignItems: "center", justifyContent: "center" },
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   scoreInfo: { flex: 1, gap: 2 },
+  playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  playerEntryInfo: { flex: 1, gap: 2 },
   scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
+  blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center" },
+  blobButtonActive: { backgroundColor: colors.green },
+  blobButtonText: { color: colors.green2, fontSize: 12, fontWeight: "700" },
+  blobButtonTextActive: { color: "#ffffff" },
   pointsBox: { width: 58, borderRadius: 16, backgroundColor: "#edf2eb", paddingVertical: 10, alignItems: "center" },
   pointsText: { color: colors.green2, fontSize: 20, fontWeight: "700" },
+  playerChip: { backgroundColor: "#e6dfcf", borderRadius: 18, paddingVertical: 12, paddingHorizontal: 14, gap: 2 },
+  playerChipActive: { backgroundColor: colors.green },
+  playerChipName: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  playerChipNameActive: { color: "#ffffff" },
+  playerChipMeta: { color: colors.muted, fontSize: 12 },
+  playerChipMetaActive: { color: "#dce5dd" },
   noteCard: { backgroundColor: colors.soft, borderRadius: 22, padding: 18, gap: 10 },
   noteText: { color: "#4e4a41", fontSize: 14, lineHeight: 20 },
+  modalScrim: { flex: 1, justifyContent: "center", padding: 20 },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(20,55,38,0.5)" },
+  modalCard: { maxHeight: "85%", backgroundColor: colors.panel, borderRadius: 24, borderWidth: 1, borderColor: colors.border, padding: 18, gap: 14 },
+  modalHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  modalTitleWrap: { flex: 1, gap: 4 },
+  modalTitle: { color: colors.ink, fontSize: 28, lineHeight: 32, fontWeight: "700" },
+  modalCloseButton: { backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14 },
+  modalScroll: { flexGrow: 0 },
+  modalScrollContent: { gap: 10, paddingBottom: 4 },
+  modalHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.pale, borderRadius: 18, padding: 12 },
+  modalHoleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#edf2eb", alignItems: "center", justifyContent: "center" },
+  modalHoleNumberText: { color: colors.green2, fontSize: 16, fontWeight: "700" },
+  modalStat: { width: 58, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 8, alignItems: "center" },
+  modalStatLabel: { color: colors.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6 },
+  modalStatValue: { color: colors.green2, fontSize: 18, fontWeight: "700" },
 });
