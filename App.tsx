@@ -173,6 +173,26 @@ function comparePlayers(
   return a.name.localeCompare(b.name);
 }
 
+function compareWorstPlayers(
+  a: Player & { total: number; done: number; holePoints: number[] },
+  b: Player & { total: number; done: number; holePoints: number[] },
+) {
+  if (b.done !== a.done) {
+    return b.done - a.done;
+  }
+
+  if (a.total !== b.total) {
+    return a.total - b.total;
+  }
+
+  const countback = compareCountback(b.holePoints, a.holePoints);
+  if (countback !== 0) {
+    return countback;
+  }
+
+  return a.name.localeCompare(b.name);
+}
+
 function shuffle<T>(items: T[]) {
   const clone = [...items];
   for (let index = clone.length - 1; index > 0; index -= 1) {
@@ -625,6 +645,13 @@ export default function App() {
     () => Object.fromEntries(rankedPlayers.map((player) => [player.id, player])),
     [rankedPlayers],
   );
+  const lowestPointsPlayer = useMemo(
+    () =>
+      [...rankedPlayers]
+        .filter((player) => player.done > 0)
+        .sort(compareWorstPlayers)[0] ?? null,
+    [rankedPlayers],
+  );
   const scoringSummary = useMemo(
     () => groupSizeSummary(round.groups, round.players),
     [round.groups, round.players],
@@ -751,7 +778,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.hero}>
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
-          <Text style={styles.heroTitle}>Setup, score logging, and saved rounds in one app.</Text>
+          <Text style={styles.heroTitle}>Create rollups, log scores, and save results in one app.</Text>
           <Text style={styles.heroCopy}>
             Log individual Stableford points after the round, compare mixed 3-balls and 4-balls, and total groups hole by hole using your rollup best-ball rules.
           </Text>
@@ -771,7 +798,7 @@ export default function App() {
           </View>
           <View style={styles.tabRow}>
             {[
-              { key: "setup", label: "Setup" },
+              { key: "setup", label: "Create Rollup" },
               { key: "live", label: "Log Scores" },
               { key: "saved", label: "Saved" },
             ].map((item) => {
@@ -792,8 +819,8 @@ export default function App() {
         {tab === "setup" ? (
           <>
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Round setup</Text>
-              <Text style={styles.sectionSubtitle}>Edit the round, groups, and field before play starts.</Text>
+              <Text style={styles.sectionTitle}>Create rollup</Text>
+              <Text style={styles.sectionSubtitle}>Build the rollup, groups, and field before you log scores.</Text>
             </View>
 
             <View style={styles.card}>
@@ -1228,15 +1255,17 @@ export default function App() {
                 </Text>
               </View>
               <View style={styles.rowBetween}>
-                <Text style={styles.itemText}>Leading group</Text>
+                <Text style={styles.itemText}>Lowest player</Text>
                 <Text style={styles.itemValue}>
-                  {rankedGroups[0] ? `${rankedGroups[0].name} • ${rankedGroups[0].total} pts` : "No group result yet"}
+                  {lowestPointsPlayer
+                    ? `${lowestPointsPlayer.name} • ${lowestPointsPlayer.total} pts`
+                    : "No scores yet"}
                 </Text>
               </View>
               <View style={styles.rowBetween}>
-                <Text style={styles.itemText}>Current view</Text>
+                <Text style={styles.itemText}>Leading group</Text>
                 <Text style={styles.itemValue}>
-                  {selectedTee.name} • Hole {currentHole.number} • {currentHole.yardage} yds
+                  {rankedGroups[0] ? `${rankedGroups[0].name} • ${rankedGroups[0].total} pts` : "No group result yet"}
                 </Text>
               </View>
             </View>
