@@ -4,6 +4,8 @@
 
 Version 2 should let a player stand on a new course, scan a physical scorecard on their phone, review the extracted details, and save that course for future rounds.
 
+Version 2 should also introduce a true shared scorecard flow so multiple players can follow scoring during the round instead of only logging results afterwards.
+
 ## Scorecard scanning flow
 
 1. Open a new "Add course" flow.
@@ -42,6 +44,25 @@ Version 2 should let a player stand on a new course, scan a physical scorecard o
 - OCR review and correction
 - Tee setup
 - Start round from saved course
+- Shared scorecard
+- Live round view
+
+## Shared scorecard flow
+
+1. Create a round from a saved course.
+2. Open a shared scorecard that shows every player across all holes.
+3. Let scores be entered hole by hole while the round is in progress.
+4. Recalculate player and group totals as each score is added.
+5. Keep the current ghost-player rule visible for mixed 3-ball and 4-ball fields.
+6. Save the finished round back into the round history when play ends.
+
+## Shared scorecard goals
+
+- Make V2 feel clearly different from V1's post-round score logging.
+- Show one shared card instead of switching between separate views to understand the state of the round.
+- Let the scorer move quickly across players on the same hole.
+- Keep group totals, individual totals, and ghost-player context visible during play.
+- Preserve the same rollup scoring rules already validated in V1.
 
 ## Technical notes
 
@@ -50,6 +71,9 @@ Version 2 should let a player stand on a new course, scan a physical scorecard o
 - The scan result should never be trusted blindly; always include a confirmation step.
 - Some scorecards have unusual layouts, so the importer should allow partial/manual completion.
 - A clean fallback is important: users should still be able to create a course by hand.
+- The shared scorecard should probably be built around a grid or matrix layout with sticky player and hole labels.
+- V2 should decide whether shared scoring is single-device only first, or whether multi-device sync is in scope.
+- Live entry should avoid copying the V1 screen structure too closely so the two versions feel intentionally different.
 
 ## V1 decisions to keep compatible with V2
 
@@ -57,6 +81,7 @@ Version 2 should let a player stand on a new course, scan a physical scorecard o
 - Keep scoring logic separate from course-definition logic.
 - Keep tee selection flexible per player.
 - Prefer reusable helpers around holes, tees, and rounds so imported courses can slot in later.
+- Keep the V1 ghost-player logic reusable so V2 can show the same mixed-field scoring rule inside the shared scorecard.
 
 ## Nice-to-have V2 ideas
 

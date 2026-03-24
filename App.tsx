@@ -91,7 +91,7 @@ const teeDefinitions = [
   { id: "white", name: "White", courseRating: 70.7, slopeRating: 125, yardages: [279, 199, 536, 343, 328, 165, 407, 341, 421, 169, 413, 323, 349, 195, 410, 425, 534, 395] },
   { id: "yellow", name: "Yellow", courseRating: 68.9, slopeRating: 120, yardages: [258, 188, 527, 334, 316, 150, 375, 289, 358, 161, 374, 315, 339, 184, 386, 388, 500, 374] },
   { id: "blue", name: "Blue", courseRating: 67.8, slopeRating: 119, yardages: [269, 164, 513, 304, 292, 139, 386, 302, 377, 124, 360, 294, 325, 177, 371, 370, 509, 360] },
-  { id: "red", name: "Red (Ladies)", courseRating: 71.6, slopeRating: 124, yardages: [232, 159, 483, 301, 283, 131, 347, 265, 339, 131, 352, 290, 318, 174, 381, 333, 468, 355] },
+  { id: "red", name: "Red", courseRating: 71.6, slopeRating: 124, yardages: [232, 159, 483, 301, 283, 131, 347, 265, 339, 131, 352, 290, 318, 174, 381, 333, 468, 355] },
 ];
 
 const id = (prefix: string) =>
@@ -107,6 +107,7 @@ const stableford = (gross: number, par: number, shots: number) =>
   Math.max(0, 2 + par - (gross - shots));
 const BLOB_SCORE = "B";
 const scoreEntered = (value: string | undefined) => value === BLOB_SCORE || Number(value) > 0;
+const scoreDisplayValue = (value: string | undefined) => (value === BLOB_SCORE ? "✓" : value ?? "");
 const holePoints = (player: Player, hole: Hole) => {
   const value = player.scores[hole.number];
   if (!scoreEntered(value) || value === BLOB_SCORE) {
@@ -183,44 +184,31 @@ function shuffle<T>(items: T[]) {
   return clone;
 }
 
-function pickGhost(players: Player[], groupId: string, blocked: string[] = []) {
-  const memberIds = new Set(players.filter((player) => player.groupId === groupId).map((player) => player.id));
-  const ids = shuffle(players.map((player) => player.id));
-  return ids.find((playerId) => !memberIds.has(playerId) && !blocked.includes(playerId))
-    ?? ids.find((playerId) => !memberIds.has(playerId))
-    ?? null;
-}
-
 function syncGhosts(players: Player[], groups: Group[], current: Record<string, string | null> = {}, force = false) {
   const next: Record<string, string | null> = {};
-  const used = new Set<string>();
-  const activeGroupSizes = groups
-    .map((group) => players.filter((player) => player.groupId === group.id).length)
-    .filter((size) => size > 0);
+  const groupSizes = new Map(
+    groups.map((group) => [group.id, players.filter((player) => player.groupId === group.id).length]),
+  );
+  const activeGroupSizes = [...groupSizes.values()].filter((size) => size > 0);
   const mixedThreeAndFour = activeGroupSizes.includes(3) && activeGroupSizes.includes(4);
 
   if (!mixedThreeAndFour) {
     return next;
   }
 
-  groups.forEach((group) => {
-    const members = players.filter((player) => player.groupId === group.id);
-    if (members.length !== 3) {
-      return;
-    }
-    const memberIds = new Set(members.map((player) => player.id));
-    const existing = current[group.id] ?? null;
-    if (!force && existing && !memberIds.has(existing) && !used.has(existing)) {
-      next[group.id] = existing;
-      used.add(existing);
-      return;
-    }
-    const ghost = pickGhost(players, group.id, [...used]);
-    next[group.id] = ghost;
-    if (ghost) {
-      used.add(ghost);
-    }
+  const threeBallGroups = groups.filter((group) => groupSizes.get(group.id) === 3);
+  const eligibleGhostIds = players.map((player) => player.id);
+  const existingSharedGhost = !force
+    ? threeBallGroups
+        .map((group) => current[group.id] ?? null)
+        .find((ghostId): ghostId is string => !!ghostId && eligibleGhostIds.includes(ghostId))
+    : null;
+  const sharedGhost = existingSharedGhost ?? shuffle(eligibleGhostIds)[0] ?? null;
+
+  threeBallGroups.forEach((group) => {
+    next[group.id] = sharedGhost;
   });
+
   return next;
 }
 
@@ -322,6 +310,51 @@ function starterRound(): RoundState {
       { id: id("p"), name: "Steve", handicap: 14, groupId: b.id, teeId: "yellow", scores: { 1: "5", 2: "5", 3: "3", 4: "6" } },
       { id: id("p"), name: "Paul", handicap: 19, groupId: b.id, teeId: "yellow", scores: { 1: "6", 2: "5", 3: "4", 4: "6" } },
       { id: id("p"), name: "Graham", handicap: 24, groupId: b.id, teeId: "red", scores: { 1: "6", 2: "6", 3: "4", 4: "7" } },
+    ],
+    ghosts: {},
+  });
+}
+
+function randomTestScores(holeCount = 6): Record<number, string> {
+  const scores: Record<number, string> = {};
+
+  for (let hole = 1; hole <= holeCount; hole += 1) {
+    const roll = Math.random();
+    scores[hole] = roll < 0.12 ? BLOB_SCORE : String(3 + Math.floor(Math.random() * 6));
+  }
+
+  return scores;
+}
+
+function ghostTestRound(): RoundState {
+  const groups = [
+    { id: id("group"), name: "Group 1" },
+    { id: id("group"), name: "Group 2" },
+    { id: id("group"), name: "Group 3" },
+    { id: id("group"), name: "Group 4" },
+  ];
+  const [group1, group2, group3, group4] = groups;
+
+  return normalizeRound({
+    id: id("round"),
+    name: "Ghost Test Round",
+    date: today(),
+    tees: defaultTees(),
+    groups,
+    players: [
+      { id: id("p"), name: "Chris", handicap: 11, groupId: group1.id, teeId: "white", scores: randomTestScores() },
+      { id: id("p"), name: "Martin", handicap: 17, groupId: group1.id, teeId: "white", scores: randomTestScores() },
+      { id: id("p"), name: "Neil", handicap: 22, groupId: group1.id, teeId: "yellow", scores: randomTestScores() },
+      { id: id("p"), name: "Adrian", handicap: 9, groupId: group1.id, teeId: "blue", scores: randomTestScores() },
+      { id: id("p"), name: "Steve", handicap: 14, groupId: group2.id, teeId: "yellow", scores: randomTestScores() },
+      { id: id("p"), name: "Paul", handicap: 19, groupId: group2.id, teeId: "yellow", scores: randomTestScores() },
+      { id: id("p"), name: "Graham", handicap: 24, groupId: group2.id, teeId: "red", scores: randomTestScores() },
+      { id: id("p"), name: "Lee", handicap: 8, groupId: group3.id, teeId: "white", scores: randomTestScores() },
+      { id: id("p"), name: "Jason", handicap: 13, groupId: group3.id, teeId: "white", scores: randomTestScores() },
+      { id: id("p"), name: "Mark", handicap: 20, groupId: group3.id, teeId: "yellow", scores: randomTestScores() },
+      { id: id("p"), name: "Pete", handicap: 16, groupId: group4.id, teeId: "yellow", scores: randomTestScores() },
+      { id: id("p"), name: "Tom", handicap: 21, groupId: group4.id, teeId: "red", scores: randomTestScores() },
+      { id: id("p"), name: "Ben", handicap: 6, groupId: group4.id, teeId: "blue", scores: randomTestScores() },
     ],
     ghosts: {},
   });
@@ -630,7 +663,6 @@ export default function App() {
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
-  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupEntryPlayers = useMemo(
     () => round.groups.flatMap((group) => round.players.filter((player) => player.groupId === group.id)),
     [round.groups, round.players],
@@ -645,11 +677,12 @@ export default function App() {
   );
 
   const updatePlayerScore = (playerId: string, holeNumber: number, value: string) => {
+    const nextScore = value === BLOB_SCORE ? BLOB_SCORE : value.replace(/[^0-9]/g, "").slice(0, 1);
     setRound((current) => ({
       ...current,
       players: current.players.map((currentPlayer) =>
         currentPlayer.id === playerId
-          ? { ...currentPlayer, scores: { ...currentPlayer.scores, [holeNumber]: value.replace(/[^0-9]/g, "").slice(0, 2) } }
+          ? { ...currentPlayer, scores: { ...currentPlayer.scores, [holeNumber]: nextScore } }
           : currentPlayer,
       ),
     }));
@@ -663,56 +696,29 @@ export default function App() {
     if (nextValue === BLOB_SCORE) {
       const currentIndex = orderedKeys.indexOf(currentKey);
       const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
-      focusNextInput(nextKey, true);
+      focusNextInput(nextKey);
     }
   };
 
-  useEffect(
-    () => () => {
-      if (focusTimerRef.current) {
-        clearTimeout(focusTimerRef.current);
-      }
-    },
-    [],
-  );
-
-  const focusNextInput = (nextKey: string | undefined, immediate = false) => {
-    if (focusTimerRef.current) {
-      clearTimeout(focusTimerRef.current);
-      focusTimerRef.current = null;
-    }
-
+  const focusNextInput = (nextKey: string | undefined) => {
     if (!nextKey) {
       return;
     }
 
-    const focus = () => {
-      inputRefs.current[nextKey]?.focus();
-    };
-
-    if (immediate) {
-      focus();
-      return;
-    }
-
-    focusTimerRef.current = setTimeout(focus, 500);
+    inputRefs.current[nextKey]?.focus();
   };
 
   const handleScoreInputChange = (playerId: string, holeNumber: number, value: string, orderedKeys: string[], currentKey: string) => {
-    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 2);
+    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 1);
     updatePlayerScore(playerId, holeNumber, sanitized);
 
     if (!sanitized) {
-      if (focusTimerRef.current) {
-        clearTimeout(focusTimerRef.current);
-        focusTimerRef.current = null;
-      }
       return;
     }
 
     const currentIndex = orderedKeys.indexOf(currentKey);
     const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
-    focusNextInput(nextKey, sanitized.length >= 2);
+    focusNextInput(nextKey);
   };
 
   const clearCurrentRound = () => {
@@ -727,15 +733,27 @@ export default function App() {
     setTab("setup");
   };
 
+  const loadGhostTestRound = () => {
+    setRound(ghostTestRound());
+    setSelectedHole(1);
+    setSelectedPlayerId(null);
+    setScoreEntryPlayerId(null);
+    setScoreEntryMode("group");
+    setSelectedTeeId("white");
+    setCourseSetupExpanded(false);
+    setLiveSection("groups");
+    setTab("live");
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.hero}>
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
-          <Text style={styles.heroTitle}>Setup, scoring, and saved rounds in one app.</Text>
+          <Text style={styles.heroTitle}>Setup, score logging, and saved rounds in one app.</Text>
           <Text style={styles.heroCopy}>
-            Track individual Stableford points, compare mixed 3-balls and 4-balls, and score groups hole by hole using your rollup best-ball rules.
+            Log individual Stableford points after the round, compare mixed 3-balls and 4-balls, and total groups hole by hole using your rollup best-ball rules.
           </Text>
           <View style={styles.statRow}>
             <View style={styles.statCard}>
@@ -754,7 +772,7 @@ export default function App() {
           <View style={styles.tabRow}>
             {[
               { key: "setup", label: "Setup" },
-              { key: "live", label: "Live Round" },
+              { key: "live", label: "Log Scores" },
               { key: "saved", label: "Saved" },
             ].map((item) => {
               const active = tab === item.key;
@@ -799,9 +817,18 @@ export default function App() {
                   <Text style={styles.secondaryText}>New blank round</Text>
                 </Pressable>
                 <Pressable onPress={() => setTab("live")} style={styles.primaryButton}>
-                  <Text style={styles.primaryText}>Open scoring</Text>
+                  <Text style={styles.primaryText}>Log scores</Text>
                 </Pressable>
               </View>
+              {__DEV__ ? (
+                <View style={styles.subCard}>
+                  <Text style={styles.smallLabel}>Dev only</Text>
+                  <Text style={styles.meta}>Load a mixed-field test round with 4 groups: one 4-ball and three 3-balls.</Text>
+                  <Pressable onPress={loadGhostTestRound} style={styles.smallButton}>
+                    <Text style={styles.smallButtonText}>Load ghost test round</Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.card}>
@@ -1165,10 +1192,10 @@ export default function App() {
               <Text style={styles.noteText}>
                 {invalidGroups.length === 0
                   ? "All groups currently fit the 3-ball or 4-ball rule."
-                  : `${invalidGroups.length} group${invalidGroups.length === 1 ? "" : "s"} still need adjusting before scoring.`}
+                  : `${invalidGroups.length} group${invalidGroups.length === 1 ? "" : "s"} still need adjusting before score logging.`}
               </Text>
-              <Text style={styles.noteText}>A 3-ball uses one drawn real player from the rest of the field for the whole round.</Text>
-              <Text style={styles.noteText}>If every group is a 3-ball, the team score is the best 2 Stableford scores per hole. If every group is a 4-ball, it is the best 3 per hole. Mixed fields give each 3-ball a ghost and still count the best 3 per hole.</Text>
+              <Text style={styles.noteText}>In a mixed field, every 3-ball uses the same drawn real player from anywhere in the field for the whole round.</Text>
+              <Text style={styles.noteText}>If every group is a 3-ball, the team score is the best 2 Stableford scores per hole. If every group is a 4-ball, it is the best 3 per hole. Mixed fields give every 3-ball the same ghost and still count the best 3 per hole.</Text>
             </View>
           </>
         ) : null}
@@ -1177,23 +1204,23 @@ export default function App() {
           <>
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>{round.name}</Text>
-              <Text style={styles.sectionSubtitle}>{formatDate(round.date)} • Live Stableford and group totals</Text>
+              <Text style={styles.sectionSubtitle}>{formatDate(round.date)} • Log scores and review Stableford group totals</Text>
             </View>
 
             <View style={styles.tabRow}>
-              <Pressable onPress={() => setLiveSection("groups")} style={[styles.tabButton, liveSection === "groups" && styles.tabButtonActive]}>
-                <Text style={[styles.tabText, liveSection === "groups" && styles.tabTextActive]}>Groups</Text>
+              <Pressable onPress={() => setLiveSection("entry")} style={[styles.segmentButton, liveSection === "entry" && styles.segmentButtonActive]}>
+                <Text style={[styles.segmentText, liveSection === "entry" && styles.segmentTextActive]}>Entry</Text>
               </Pressable>
-              <Pressable onPress={() => setLiveSection("players")} style={[styles.tabButton, liveSection === "players" && styles.tabButtonActive]}>
-                <Text style={[styles.tabText, liveSection === "players" && styles.tabTextActive]}>Players</Text>
+              <Pressable onPress={() => setLiveSection("players")} style={[styles.segmentButton, liveSection === "players" && styles.segmentButtonActive]}>
+                <Text style={[styles.segmentText, liveSection === "players" && styles.segmentTextActive]}>Players (LB)</Text>
               </Pressable>
-              <Pressable onPress={() => setLiveSection("entry")} style={[styles.tabButton, liveSection === "entry" && styles.tabButtonActive]}>
-                <Text style={[styles.tabText, liveSection === "entry" && styles.tabTextActive]}>Entry</Text>
+              <Pressable onPress={() => setLiveSection("groups")} style={[styles.segmentButton, liveSection === "groups" && styles.segmentButtonActive]}>
+                <Text style={[styles.segmentText, liveSection === "groups" && styles.segmentTextActive]}>Groups (LB)</Text>
               </Pressable>
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.smallLabel}>Live snapshot</Text>
+              <Text style={styles.smallLabel}>Round snapshot</Text>
               <View style={styles.rowBetween}>
                 <Text style={styles.itemText}>Leading player</Text>
                 <Text style={styles.itemValue}>
@@ -1237,7 +1264,7 @@ export default function App() {
                   }
                   style={styles.primaryButton}
                 >
-                  <Text style={styles.primaryText}>Redraw ghosts</Text>
+                  <Text style={styles.primaryText}>Redraw ghost</Text>
                 </Pressable>
               ) : (
                 <View style={styles.primaryButton}>
@@ -1258,7 +1285,7 @@ export default function App() {
                   <Text style={styles.sectionTitle}>Group leaderboard</Text>
                   <Text style={styles.sectionSubtitle}>
                     {scoringSummary.mixedThreeAndFour
-                      ? "Mixed field: 4-balls count best 3, and 3-balls use a ghost so they also count best 3."
+                      ? "Mixed field: 4-balls count best 3, and every 3-ball shares one ghost so they also count best 3."
                       : scoringSummary.allThree
                         ? "All 3-balls: each group counts the best 2 Stableford scores on every hole."
                         : "All 4-balls: each group counts the best 3 Stableford scores on every hole."}
@@ -1296,23 +1323,20 @@ export default function App() {
                           <Text style={styles.smallLabel}>Ghost player</Text>
                           <Text style={styles.itemTitle}>{group.ghost?.name ?? "No ghost drawn"}</Text>
                           <Text style={styles.meta}>
-                            {group.ghost ? `This mixed-field 3-ball counts ${group.ghost.name} as the ghost and takes the best 3 scores on each hole.` : "Draw a player from the rest of the field"}
+                            {group.ghost
+                              ? `This mixed-field 3-ball shares ${group.ghost.name} with the other 3-balls and takes the best 3 scores on each hole.`
+                              : "Draw one shared ghost from anywhere in the field."}
                           </Text>
                           <Pressable
                             onPress={() =>
-                              setRound((current) => {
-                                const blocked = Object.entries(current.ghosts)
-                                  .filter(([currentGroupId, ghostId]) => currentGroupId !== group.id && ghostId)
-                                  .map(([, ghostId]) => ghostId as string);
-                                return {
-                                  ...current,
-                                  ghosts: { ...current.ghosts, [group.id]: pickGhost(current.players, group.id, blocked) },
-                                };
-                              })
+                              setRound((current) => ({
+                                ...current,
+                                ghosts: syncGhosts(current.players, current.groups, current.ghosts, true),
+                              }))
                             }
                             style={styles.primaryButton}
                           >
-                            <Text style={styles.primaryText}>Draw ghost</Text>
+                            <Text style={styles.primaryText}>Change shared ghost</Text>
                           </Pressable>
                         </View>
                       ) : (
@@ -1334,12 +1358,12 @@ export default function App() {
               <>
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Individual leaderboard</Text>
-                  <Text style={styles.sectionSubtitle}>Ranked by each player&apos;s Stableford total. Tap a points badge to open the full round.</Text>
+                  <Text style={styles.sectionSubtitle}>Ranked by each player&apos;s Stableford total. Tap a points badge to open the logged round.</Text>
                 </View>
 
                 <View style={styles.card}>
                   {rankedPlayers.length === 0 ? (
-                    <Text style={styles.meta}>Add players before scoring begins.</Text>
+                    <Text style={styles.meta}>Add players before score logging begins.</Text>
                   ) : (
                     rankedPlayers.map((player, index) => (
                       <View key={player.id} style={styles.rankRow}>
@@ -1366,16 +1390,16 @@ export default function App() {
             {liveSection === "entry" ? (
               <>
                 <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Hole entry</Text>
-                  <Text style={styles.sectionSubtitle}>Enter scores by group for one hole at a time, or switch to one player and fill the whole round in one go.</Text>
+                  <Text style={styles.sectionTitle}>Score entry</Text>
+                  <Text style={styles.sectionSubtitle}>Log scores by group one hole at a time, or switch to one player and fill the whole round in one go.</Text>
                 </View>
 
                 <View style={styles.tabRow}>
-                  <Pressable onPress={() => setScoreEntryMode("group")} style={[styles.tabButton, scoreEntryMode === "group" && styles.tabButtonActive]}>
-                    <Text style={[styles.tabText, scoreEntryMode === "group" && styles.tabTextActive]}>By group</Text>
+                  <Pressable onPress={() => setScoreEntryMode("group")} style={[styles.segmentButton, scoreEntryMode === "group" && styles.segmentButtonActive]}>
+                    <Text style={[styles.segmentText, scoreEntryMode === "group" && styles.segmentTextActive]}>By group</Text>
                   </Pressable>
-                  <Pressable onPress={() => setScoreEntryMode("player")} style={[styles.tabButton, scoreEntryMode === "player" && styles.tabButtonActive]}>
-                    <Text style={[styles.tabText, scoreEntryMode === "player" && styles.tabTextActive]}>By player</Text>
+                  <Pressable onPress={() => setScoreEntryMode("player")} style={[styles.segmentButton, scoreEntryMode === "player" && styles.segmentButtonActive]}>
+                    <Text style={[styles.segmentText, scoreEntryMode === "player" && styles.segmentTextActive]}>By player</Text>
                   </Pressable>
                 </View>
 
@@ -1431,7 +1455,7 @@ export default function App() {
                               ref={(ref) => {
                                 inputRefs.current[`group:${selectedHole}:${player.id}`] = ref;
                               }}
-                              value={player.scores[currentHole.number] === BLOB_SCORE ? "" : player.scores[currentHole.number] ?? ""}
+                              value={scoreDisplayValue(player.scores[currentHole.number])}
                               onChangeText={(value) =>
                                 handleScoreInputChange(
                                   player.id,
@@ -1444,9 +1468,9 @@ export default function App() {
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={2}
+                              maxLength={1}
                               blurOnSubmit={false}
-                              style={styles.scoreInput}
+                              style={[styles.scoreInput, player.scores[currentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
                                 <Pressable
                                   onPress={() =>
@@ -1517,7 +1541,7 @@ export default function App() {
                               ref={(ref) => {
                                 inputRefs.current[`player:${scoreEntryPlayer.id}:${hole.number}`] = ref;
                               }}
-                              value={scoreEntryPlayer.scores[hole.number] === BLOB_SCORE ? "" : scoreEntryPlayer.scores[hole.number] ?? ""}
+                              value={scoreDisplayValue(scoreEntryPlayer.scores[hole.number])}
                               onChangeText={(value) =>
                                 handleScoreInputChange(
                                   scoreEntryPlayer.id,
@@ -1530,9 +1554,9 @@ export default function App() {
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={2}
+                              maxLength={1}
                               blurOnSubmit={false}
-                              style={styles.scoreInput}
+                              style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
                             <Pressable
                               onPress={() =>
@@ -1592,7 +1616,7 @@ export default function App() {
             </View>
             {savedRounds.length === 0 ? (
               <View style={styles.card}>
-                <Text style={styles.meta}>No saved rounds yet. Save one from the live round tab.</Text>
+                <Text style={styles.meta}>No saved rounds yet. Save one from the score logging tab.</Text>
               </View>
             ) : (
               savedRounds.map((saved) => {
@@ -1644,7 +1668,7 @@ export default function App() {
           <Text style={styles.noteText}>Stableford points are calculated from gross score, handicap, and stroke index.</Text>
           <Text style={styles.noteText}>Group scores are counted hole by hole using best-ball rules: best 3 from a 4-ball, best 2 from an all-3-ball field, or best 3 with a ghost when 3s and 4s are mixed.</Text>
           <Text style={styles.noteText}>Individual ties are split by countback on the last 9 holes, then last 6, last 3, and final hole.</Text>
-          <Text style={styles.noteText}>A ghost player stays with that 3-ball for the whole round, never hole by hole.</Text>
+          <Text style={styles.noteText}>In mixed fields, the shared ghost player stays with every 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
         </View>
       </ScrollView>
@@ -1729,6 +1753,10 @@ const styles = StyleSheet.create({
   tabButtonActive: { backgroundColor: colors.sand },
   tabText: { color: "#dce5dd", fontWeight: "700", fontSize: 14 },
   tabTextActive: { color: colors.ink },
+  segmentButton: { flex: 1, backgroundColor: "#e8e0cd", borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: colors.border },
+  segmentButtonActive: { backgroundColor: colors.green, borderColor: colors.green },
+  segmentText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  segmentTextActive: { color: "#ffffff" },
   section: { gap: 3 },
   sectionTitle: { color: colors.ink, fontSize: 24, fontWeight: "700" },
   sectionSubtitle: { color: colors.muted, fontSize: 14 },
@@ -1774,6 +1802,7 @@ const styles = StyleSheet.create({
   playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
   playerEntryInfo: { flex: 1, gap: 2 },
   scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
+  scoreInputBlob: { color: colors.green2 },
   blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center" },
   blobButtonActive: { backgroundColor: colors.green },
   blobButtonText: { color: colors.green2, fontSize: 12, fontWeight: "700" },
