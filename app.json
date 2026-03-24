@@ -2,7 +2,7 @@
   "expo": {
     "name": "Your Stableford Rollup calculator",
     "slug": "fairway-mobile",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
@@ -14,8 +14,8 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.fairway",
-      "buildNumber": "3",
+      "bundleIdentifier": "com.podavies.fairway",
+      "buildNumber": "6",
       "config": {
         "usesNonExemptEncryption": false
       }
@@ -23,6 +23,11 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#123524"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f49a1ebc-099c-4d21-9613-ae8dc2d5998b"
       }
     }
   }

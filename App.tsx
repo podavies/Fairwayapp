@@ -39,6 +39,7 @@ type RoundState = {
   id: string;
   name: string;
   date: string;
+  courseName: string;
   tees: TeeSet[];
   groups: Group[];
   players: Player[];
@@ -73,6 +74,7 @@ const defaultCourse: Hole[] = [
 const STORAGE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}rollup-rounds.json`
   : null;
+const DEFAULT_COURSE_NAME = "Default Course";
 
 const colors = {
   bg: "#f3efe4",
@@ -306,6 +308,7 @@ function normalizeRound(round: RoundState): RoundState {
     id: round.id || id("round"),
     name: round.name || "Rollup Round",
     date: round.date || today(),
+    courseName: round.courseName?.trim() || DEFAULT_COURSE_NAME,
     tees,
     groups: groups.map((group) => ({ ...group })),
     players,
@@ -320,6 +323,7 @@ function starterRound(): RoundState {
     id: id("round"),
     name: "Saturday Rollup",
     date: today(),
+    courseName: DEFAULT_COURSE_NAME,
     tees: defaultTees(),
     groups,
     players: [
@@ -359,6 +363,7 @@ function ghostTestRound(): RoundState {
     id: id("round"),
     name: "Ghost Test Round",
     date: today(),
+    courseName: DEFAULT_COURSE_NAME,
     tees: defaultTees(),
     groups,
     players: [
@@ -385,6 +390,7 @@ function blankRound(): RoundState {
     id: id("round"),
     name: "New Rollup",
     date: today(),
+    courseName: DEFAULT_COURSE_NAME,
     tees: defaultTees(),
     groups: defaultGroups(),
     players: [],
@@ -865,8 +871,15 @@ export default function App() {
                   <Text style={styles.smallButtonText}>{courseSetupExpanded ? "Hide holes" : "Show holes"}</Text>
                 </Pressable>
               </View>
+              <TextInput
+                value={round.courseName}
+                onChangeText={(value) => setRound((current) => ({ ...current, courseName: value.slice(0, 40) }))}
+                placeholder="Course name"
+                placeholderTextColor="#8a877f"
+                style={styles.input}
+              />
               <Text style={styles.sectionSubtitle}>
-                {selectedTee.name} • {totalYardageValue} yds • Par {totalParValue} • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
+                {round.courseName} • {selectedTee.name} • {totalYardageValue} yds • Par {totalParValue} • CR {selectedTee.courseRating} • Slope {selectedTee.slopeRating}
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                 {round.tees.map((tee) => {
@@ -882,14 +895,116 @@ export default function App() {
                   );
                 })}
               </ScrollView>
+              <View style={styles.subCard}>
+                <Text style={styles.smallLabel}>Selected tee</Text>
+                <TextInput
+                  value={selectedTee.name}
+                  onChangeText={(value) =>
+                    setRound((current) => ({
+                      ...current,
+                      tees: current.tees.map((tee) =>
+                        tee.id === selectedTeeId ? { ...tee, name: value.slice(0, 18) || tee.name } : tee,
+                      ),
+                    }))
+                  }
+                  placeholder="Tee name"
+                  placeholderTextColor="#8a877f"
+                  style={styles.input}
+                />
+                <View style={styles.courseMetaRow}>
+                  <View style={styles.courseMetaInputWrap}>
+                    <Text style={styles.smallLabel}>CR</Text>
+                    <TextInput
+                      value={String(selectedTee.courseRating)}
+                      onChangeText={(value) =>
+                        setRound((current) => ({
+                          ...current,
+                          tees: current.tees.map((tee) =>
+                            tee.id === selectedTeeId
+                              ? {
+                                  ...tee,
+                                  courseRating: Number.parseFloat(value.replace(/[^0-9.]/g, "").slice(0, 4) || String(tee.courseRating)),
+                                }
+                              : tee,
+                          ),
+                        }))
+                      }
+                      keyboardType="decimal-pad"
+                      placeholder="70.0"
+                      placeholderTextColor="#8a877f"
+                      style={styles.courseInput}
+                    />
+                  </View>
+                  <View style={styles.courseMetaInputWrap}>
+                    <Text style={styles.smallLabel}>Slope</Text>
+                    <TextInput
+                      value={String(selectedTee.slopeRating)}
+                      onChangeText={(value) =>
+                        setRound((current) => ({
+                          ...current,
+                          tees: current.tees.map((tee) =>
+                            tee.id === selectedTeeId
+                              ? {
+                                  ...tee,
+                                  slopeRating: Math.min(155, Math.max(55, Number(value.replace(/[^0-9]/g, "").slice(0, 3) || tee.slopeRating))),
+                                }
+                              : tee,
+                          ),
+                        }))
+                      }
+                      keyboardType="number-pad"
+                      placeholder="120"
+                      placeholderTextColor="#8a877f"
+                      style={styles.courseInput}
+                    />
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() =>
+                    setRound((current) => ({
+                      ...current,
+                      courseName: DEFAULT_COURSE_NAME,
+                      tees: defaultTees(),
+                    }))
+                  }
+                  style={styles.smallButton}
+                >
+                  <Text style={styles.smallButtonText}>Reset default course</Text>
+                </Pressable>
+              </View>
               {courseSetupExpanded ? (
                 <>
-                  <Text style={styles.sectionSubtitle}>Edit yardage, par, and stroke index for each hole on the selected tee.</Text>
+                  <Text style={styles.sectionSubtitle}>Edit the hole name, yardage, par, and stroke index for the selected tee.</Text>
                   {selectedTee.course.map((hole, index) => (
                     <View key={hole.number} style={styles.courseRow}>
                       <View style={styles.courseLabelWrap}>
                         <Text style={styles.itemTitle}>Hole {hole.number}</Text>
-                        <Text style={styles.meta}>{hole.name}</Text>
+                        <TextInput
+                          value={hole.name}
+                          onChangeText={(value) =>
+                            setRound((current) => ({
+                              ...current,
+                              tees: current.tees.map((tee) =>
+                                tee.id === selectedTeeId
+                                  ? {
+                                      ...tee,
+                                      course: tee.course.map((currentHole, holeIndex) =>
+                                        holeIndex === index
+                                          ? {
+                                              ...currentHole,
+                                              name: value.slice(0, 24) || currentHole.name,
+                                            }
+                                          : currentHole,
+                                      ),
+                                    }
+                                  : tee,
+                              ),
+                            }))
+                          }
+                          placeholder="Hole name"
+                          placeholderTextColor="#8a877f"
+                          style={styles.courseNameInput}
+                        />
                       </View>
                       <View style={styles.courseInputWrap}>
                         <Text style={styles.smallLabel}>Yds</Text>
@@ -1231,7 +1346,7 @@ export default function App() {
           <>
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>{round.name}</Text>
-              <Text style={styles.sectionSubtitle}>{formatDate(round.date)} • Log scores and review Stableford group totals</Text>
+              <Text style={styles.sectionSubtitle}>{round.courseName} • {formatDate(round.date)} • Log scores and review Stableford group totals</Text>
             </View>
 
             <View style={styles.tabRow}>
@@ -1674,7 +1789,7 @@ export default function App() {
                 return (
                   <View key={saved.id} style={styles.card}>
                     <Text style={styles.itemTitle}>{saved.name}</Text>
-                    <Text style={styles.meta}>{formatDate(saved.date)} • Saved {formatDate(saved.savedAt)}</Text>
+                    <Text style={styles.meta}>{saved.courseName} • {formatDate(saved.date)} • Saved {formatDate(saved.savedAt)}</Text>
                     <Text style={styles.itemText}>{saved.players.length} players across {saved.groups.length} groups</Text>
                     <Text style={styles.itemText}>{topPlayer ? `Top player: ${topPlayer.name} on ${topPlayer.total} points` : "No player summary available"}</Text>
                     <Text style={styles.itemText}>{groupTotals[0] ? `Top group: ${groupTotals[0].name} on ${groupTotals[0].total} points` : "No group summary available"}</Text>
@@ -1805,8 +1920,11 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.green },
   chipText: { color: colors.green2, fontWeight: "700", fontSize: 13 },
   chipTextActive: { color: "#ffffff" },
-  courseRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  courseRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
   courseLabelWrap: { flex: 1 },
+  courseNameInput: { marginTop: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
+  courseMetaRow: { flexDirection: "row", gap: 10 },
+  courseMetaInputWrap: { flex: 1, gap: 6 },
   courseInputWrap: { width: 72, gap: 6 },
   courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
   cardTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
