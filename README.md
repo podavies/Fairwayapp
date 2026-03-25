@@ -2,6 +2,13 @@
 
 Cross-platform golf mobile app starter for iOS and Android using Expo and React Native.
 
+## Version 1.2.2
+
+- Group score entry now keeps each group on its own hole instead of jumping straight to the next group.
+- Swipe left or right on a group card to move that group between holes during live entry.
+- After the last player score is entered for a group, that group now advances to the next hole automatically.
+- Each group card shows its own `Hole X of 18` status to make live scoring clearer.
+
 ## MVP included
 
 - Hero dashboard with golfer profile summary

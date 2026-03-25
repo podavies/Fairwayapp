@@ -3,6 +3,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
+  PanResponder,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -508,6 +509,7 @@ export default function App() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [scoreEntryMode, setScoreEntryMode] = useState<ScoreEntryMode>("group");
   const [scoreEntryPlayerId, setScoreEntryPlayerId] = useState<string | null>(null);
+  const [groupEntryHoleByGroup, setGroupEntryHoleByGroup] = useState<Record<string, number>>({});
   const [liveSection, setLiveSection] = useState<LiveSection>("entry");
   const [storageReady, setStorageReady] = useState(false);
   const [storageMessage, setStorageMessage] = useState(
@@ -611,6 +613,17 @@ export default function App() {
     }
   }, [round.players, scoreEntryPlayerId]);
 
+  useEffect(() => {
+    setGroupEntryHoleByGroup((current) => {
+      const next: Record<string, number> = {};
+      round.groups.forEach((group) => {
+        const storedHole = current[group.id];
+        next[group.id] = storedHole && storedHole >= 1 && storedHole <= 18 ? storedHole : 1;
+      });
+      return next;
+    });
+  }, [round.groups]);
+
   const selectedTee = teeForPlayer(round.tees, selectedTeeId);
   const currentHole = selectedTee?.course.find((hole) => hole.number === selectedHole) ?? selectedTee?.course[0] ?? defaultCourse[0];
   const selectedPlayer = useMemo(
@@ -696,18 +709,27 @@ export default function App() {
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
-  const groupEntryPlayers = useMemo(
-    () => round.groups.flatMap((group) => round.players.filter((player) => player.groupId === group.id)),
-    [round.groups, round.players],
-  );
-  const groupEntryKeys = useMemo(
-    () => groupEntryPlayers.map((player) => `group:${selectedHole}:${player.id}`),
-    [groupEntryPlayers, selectedHole],
-  );
   const playerEntryKeys = useMemo(
     () => (scoreEntryPlayer ? scoreEntryCourse.map((hole) => `player:${scoreEntryPlayer.id}:${hole.number}`) : []),
     [scoreEntryCourse, scoreEntryPlayer],
   );
+
+  const setGroupEntryHole = (groupId: string, holeNumber: number) => {
+    setGroupEntryHoleByGroup((current) => ({
+      ...current,
+      [groupId]: Math.max(1, Math.min(18, holeNumber)),
+    }));
+  };
+
+  const advanceGroupEntryHole = (groupId: string, delta: number) => {
+    setGroupEntryHoleByGroup((current) => {
+      const currentHole = current[groupId] ?? 1;
+      return {
+        ...current,
+        [groupId]: Math.max(1, Math.min(18, currentHole + delta)),
+      };
+    });
+  };
 
   const updatePlayerScore = (playerId: string, holeNumber: number, value: string) => {
     const nextScore = value === BLOB_SCORE ? BLOB_SCORE : value.replace(/[^0-9]/g, "").slice(0, 1);
@@ -721,7 +743,13 @@ export default function App() {
     }));
   };
 
-  const toggleBlobScore = (playerId: string, holeNumber: number, orderedKeys: string[], currentKey: string) => {
+  const toggleBlobScore = (
+    playerId: string,
+    holeNumber: number,
+    orderedKeys: string[],
+    currentKey: string,
+    onComplete?: () => void,
+  ) => {
     const currentValue = round.players.find((player) => player.id === playerId)?.scores[holeNumber];
     const nextValue = currentValue === BLOB_SCORE ? "" : BLOB_SCORE;
     updatePlayerScore(playerId, holeNumber, nextValue);
@@ -729,7 +757,11 @@ export default function App() {
     if (nextValue === BLOB_SCORE) {
       const currentIndex = orderedKeys.indexOf(currentKey);
       const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
-      focusNextInput(nextKey);
+      if (nextKey) {
+        focusNextInput(nextKey);
+      } else {
+        onComplete?.();
+      }
     }
   };
 
@@ -741,7 +773,14 @@ export default function App() {
     inputRefs.current[nextKey]?.focus();
   };
 
-  const handleScoreInputChange = (playerId: string, holeNumber: number, value: string, orderedKeys: string[], currentKey: string) => {
+  const handleScoreInputChange = (
+    playerId: string,
+    holeNumber: number,
+    value: string,
+    orderedKeys: string[],
+    currentKey: string,
+    onComplete?: () => void,
+  ) => {
     const sanitized = value.replace(/[^0-9]/g, "").slice(0, 1);
     updatePlayerScore(playerId, holeNumber, sanitized);
 
@@ -751,7 +790,11 @@ export default function App() {
 
     const currentIndex = orderedKeys.indexOf(currentKey);
     const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
-    focusNextInput(nextKey);
+    if (nextKey) {
+      focusNextInput(nextKey);
+    } else {
+      onComplete?.();
+    }
   };
 
   const clearCurrentRound = () => {
@@ -759,6 +802,7 @@ export default function App() {
     setSelectedHole(1);
     setSelectedPlayerId(null);
     setScoreEntryPlayerId(null);
+    setGroupEntryHoleByGroup({});
     setScoreEntryMode("group");
     setSelectedTeeId("white");
     setCourseSetupExpanded(false);
@@ -771,6 +815,7 @@ export default function App() {
     setSelectedHole(1);
     setSelectedPlayerId(null);
     setScoreEntryPlayerId(null);
+    setGroupEntryHoleByGroup({});
     setScoreEntryMode("group");
     setSelectedTeeId("white");
     setCourseSetupExpanded(false);
@@ -1584,29 +1629,69 @@ export default function App() {
                         if (members.length === 0) {
                           return null;
                         }
+                        const groupSelectedHole = groupEntryHoleByGroup[group.id] ?? 1;
+                        const groupCurrentHole =
+                          selectedTee.course.find((hole) => hole.number === groupSelectedHole) ?? selectedTee.course[0] ?? defaultCourse[0];
+                        const groupEntryKeys = members.map((player) => `group:${group.id}:${groupSelectedHole}:${player.id}`);
+                        const advanceToNextGroupHole = () => {
+                          if (groupSelectedHole < 18) {
+                            advanceGroupEntryHole(group.id, 1);
+                          }
+                        };
+                        const groupPanResponder = PanResponder.create({
+                          onMoveShouldSetPanResponder: (_, gestureState) =>
+                            Math.abs(gestureState.dx) > 16 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
+                          onPanResponderRelease: (_, gestureState) => {
+                            if (gestureState.dx <= -32) {
+                              advanceGroupEntryHole(group.id, 1);
+                            } else if (gestureState.dx >= 32) {
+                              advanceGroupEntryHole(group.id, -1);
+                            }
+                          },
+                        });
                         return (
-                          <View key={group.id} style={styles.subCard}>
+                          <View key={group.id} style={styles.subCard} {...groupPanResponder.panHandlers}>
                             <Text style={styles.itemTitle}>{group.name}</Text>
+                            <Text style={styles.meta}>Hole {groupSelectedHole} of 18</Text>
+                            <Text style={styles.meta}>Swipe left for next hole or right for previous hole.</Text>
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                              {selectedTee.course.map((hole) => {
+                                const active = hole.number === groupSelectedHole;
+                                return (
+                                  <Pressable
+                                    key={`${group.id}-${hole.number}`}
+                                    onPress={() => setGroupEntryHole(group.id, hole.number)}
+                                    style={[styles.holeChip, active && styles.chipActive]}
+                                  >
+                                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{hole.number}</Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </ScrollView>
+                            <Text style={styles.meta}>
+                              {groupCurrentHole.name} • {groupCurrentHole.yardage} yds • Par {groupCurrentHole.par} • SI {groupCurrentHole.strokeIndex}
+                            </Text>
                             {members.map((player) => (
                               <View key={player.id} style={styles.scoreRow}>
                                 <View style={styles.scoreInfo}>
                                   <Text style={styles.itemText}>{player.name}</Text>
                                   <Text style={styles.meta}>
-                                    {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • Gets {strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex)} shot{strokes(player.handicap, holeForPlayer(round.tees, player, selectedHole).strokeIndex) === 1 ? "" : "s"}
+                                    {teeForPlayer(round.tees, player.teeId)?.name ?? "Tee"} • HI {player.handicap} • Gets {strokes(player.handicap, holeForPlayer(round.tees, player, groupSelectedHole).strokeIndex)} shot{strokes(player.handicap, holeForPlayer(round.tees, player, groupSelectedHole).strokeIndex) === 1 ? "" : "s"}
                                   </Text>
                                 </View>
                             <TextInput
                               ref={(ref) => {
-                                inputRefs.current[`group:${selectedHole}:${player.id}`] = ref;
+                                inputRefs.current[`group:${group.id}:${groupSelectedHole}:${player.id}`] = ref;
                               }}
-                              value={scoreDisplayValue(player.scores[currentHole.number])}
+                              value={scoreDisplayValue(player.scores[groupCurrentHole.number])}
                               onChangeText={(value) =>
                                 handleScoreInputChange(
                                   player.id,
-                                  currentHole.number,
+                                  groupCurrentHole.number,
                                   value,
                                   groupEntryKeys,
-                                  `group:${selectedHole}:${player.id}`,
+                                  `group:${group.id}:${groupSelectedHole}:${player.id}`,
+                                  advanceToNextGroupHole,
                                 )
                               }
                               keyboardType="number-pad"
@@ -1614,25 +1699,26 @@ export default function App() {
                               placeholderTextColor="#8a877f"
                               maxLength={1}
                               blurOnSubmit={false}
-                              style={[styles.scoreInput, player.scores[currentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
+                              style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
                                 <Pressable
                                   onPress={() =>
                                     toggleBlobScore(
                                       player.id,
-                                      currentHole.number,
+                                      groupCurrentHole.number,
                                       groupEntryKeys,
-                                      `group:${selectedHole}:${player.id}`,
+                                      `group:${group.id}:${groupSelectedHole}:${player.id}`,
+                                      advanceToNextGroupHole,
                                     )
                                   }
-                                  style={[styles.blobButton, player.scores[currentHole.number] === BLOB_SCORE && styles.blobButtonActive]}
+                                  style={[styles.blobButton, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.blobButtonActive]}
                                 >
-                                  <Text style={[styles.blobButtonText, player.scores[currentHole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
+                                  <Text style={[styles.blobButtonText, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
                                     Blob
                                   </Text>
                                 </Pressable>
                                 <Pressable onPress={() => setSelectedPlayerId(player.id)} style={styles.pointsBox}>
-                                  <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, selectedHole))}</Text>
+                                  <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, groupSelectedHole))}</Text>
                                   <Text style={styles.badgeLabel}>pts</Text>
                                 </Pressable>
                               </View>
