@@ -8,7 +8,16 @@ Fairway helps golf groups create rollups, customise course details, log Stablefo
 
 ## Need help
 
-If you need support, contact the app publisher using the support email or support form you plan to publish with this page.
+If you need support with Fairway, email:
+
+`podavies@msn.com`
+
+Support requests can include:
+
+- app issues or bugs
+- questions about score entry or saved rounds
+- help understanding rollup scoring screens
+- privacy or data questions
 
 ## Common help topics
 

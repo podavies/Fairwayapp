@@ -38,4 +38,6 @@ Fairway is not directed specifically at children.
 
 ## Contact
 
-For privacy questions, use the support contact listed on the Fairway support page.
+For privacy questions, contact:
+
+`podavies@msn.com`

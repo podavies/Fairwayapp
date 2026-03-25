@@ -34,11 +34,15 @@ golf,rollup,stableford,scorecard,handicap,tees,leaderboard,competition
 
 ## Support URL
 
-Host `SUPPORT.md` somewhere public and use that URL here.
+Host `SUPPORT.md` somewhere public and make sure it clearly lists the support email:
+
+`podavies@msn.com`
 
 ## Privacy Policy URL
 
-Host `PRIVACY_POLICY.md` somewhere public and use that URL here.
+Host `PRIVACY_POLICY.md` somewhere public and make sure it clearly lists the privacy contact:
+
+`podavies@msn.com`
 
 ## Review notes
 

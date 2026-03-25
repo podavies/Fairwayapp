@@ -659,6 +659,25 @@ export default function App() {
     () => rankedPlayers.find((player) => player.id === scoreEntryPlayerId) ?? rankedPlayers[0] ?? null,
     [rankedPlayers, scoreEntryPlayerId],
   );
+  const groupedScoreEntryPlayers = useMemo(
+    () =>
+      round.groups.flatMap((group) =>
+        round.players
+          .filter((player) => player.groupId === group.id)
+          .map((player) => {
+            const ranked = rankedPlayers.find((rankedPlayer) => rankedPlayer.id === player.id);
+            return (
+              ranked ?? {
+                ...player,
+                total: totalPoints(player, round.tees),
+                done: completed(player, round.tees),
+                holePoints: playerHolePoints(player, round.tees),
+              }
+            );
+          }),
+      ),
+    [rankedPlayers, round.groups, round.players, round.tees],
+  );
   const scoreEntryCourse = scoreEntryPlayer ? teeForPlayer(round.tees, scoreEntryPlayer.teeId)?.course ?? defaultCourse : defaultCourse;
   const playerMap = useMemo(
     () => Object.fromEntries(rankedPlayers.map((player) => [player.id, player])),
@@ -730,6 +749,32 @@ export default function App() {
       };
     });
   };
+
+  const advanceScoreEntryPlayer = (delta: number) => {
+    if (!groupedScoreEntryPlayers.length) {
+      return;
+    }
+
+    const currentIndex = groupedScoreEntryPlayers.findIndex((player) => player.id === scoreEntryPlayerId);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = Math.max(0, Math.min(groupedScoreEntryPlayers.length - 1, safeIndex + delta));
+    setScoreEntryPlayerId(groupedScoreEntryPlayers[nextIndex]?.id ?? null);
+  };
+  const playerEntryPanResponder = PanResponder.create({
+    onStartShouldSetPanResponderCapture: () => false,
+    onMoveShouldSetPanResponderCapture: (_, gestureState) =>
+      Math.abs(gestureState.dx) > 12 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2,
+    onMoveShouldSetPanResponder: (_, gestureState) =>
+      Math.abs(gestureState.dx) > 16 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderRelease: (_, gestureState) => {
+      if (gestureState.dx <= -32) {
+        advanceScoreEntryPlayer(1);
+      } else if (gestureState.dx >= 32) {
+        advanceScoreEntryPlayer(-1);
+      }
+    },
+  });
 
   const updatePlayerScore = (playerId: string, holeNumber: number, value: string) => {
     const nextScore = value === BLOB_SCORE ? BLOB_SCORE : value.replace(/[^0-9]/g, "").slice(0, 1);
@@ -1396,7 +1441,7 @@ export default function App() {
 
             <View style={styles.tabRow}>
               <Pressable onPress={() => setLiveSection("entry")} style={[styles.segmentButton, liveSection === "entry" && styles.segmentButtonActive]}>
-                <Text style={[styles.segmentText, liveSection === "entry" && styles.segmentTextActive]}>Entry</Text>
+                <Text style={[styles.segmentText, liveSection === "entry" && styles.segmentTextActive]}>Enter scores</Text>
               </Pressable>
               <Pressable onPress={() => setLiveSection("players")} style={[styles.segmentButton, liveSection === "players" && styles.segmentButtonActive]}>
                 <Text style={[styles.segmentText, liveSection === "players" && styles.segmentTextActive]}>Players (LB)</Text>
@@ -1579,7 +1624,7 @@ export default function App() {
             {liveSection === "entry" ? (
               <>
                 <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Score entry</Text>
+                  <Text style={styles.sectionTitle}>Enter scores</Text>
                   <Text style={styles.sectionSubtitle}>Log scores by group one hole at a time, or switch to one player and fill the whole round in one go.</Text>
                 </View>
 
@@ -1639,8 +1684,12 @@ export default function App() {
                           }
                         };
                         const groupPanResponder = PanResponder.create({
+                          onStartShouldSetPanResponderCapture: () => false,
+                          onMoveShouldSetPanResponderCapture: (_, gestureState) =>
+                            Math.abs(gestureState.dx) > 12 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2,
                           onMoveShouldSetPanResponder: (_, gestureState) =>
                             Math.abs(gestureState.dx) > 16 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
+                          onPanResponderTerminationRequest: () => false,
                           onPanResponderRelease: (_, gestureState) => {
                             if (gestureState.dx <= -32) {
                               advanceGroupEntryHole(group.id, 1);
@@ -1651,9 +1700,11 @@ export default function App() {
                         });
                         return (
                           <View key={group.id} style={styles.subCard} {...groupPanResponder.panHandlers}>
-                            <Text style={styles.itemTitle}>{group.name}</Text>
-                            <Text style={styles.meta}>Hole {groupSelectedHole} of 18</Text>
-                            <Text style={styles.meta}>Swipe left for next hole or right for previous hole.</Text>
+                            <View {...groupPanResponder.panHandlers}>
+                              <Text style={styles.itemTitle}>{group.name}</Text>
+                              <Text style={styles.meta}>Hole {groupSelectedHole} of 18</Text>
+                              <Text style={styles.meta}>Swipe left for next hole or right for previous hole.</Text>
+                            </View>
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
                               {selectedTee.course.map((hole) => {
                                 const active = hole.number === groupSelectedHole;
@@ -1668,11 +1719,13 @@ export default function App() {
                                 );
                               })}
                             </ScrollView>
-                            <Text style={styles.meta}>
-                              {groupCurrentHole.name} • {groupCurrentHole.yardage} yds • Par {groupCurrentHole.par} • SI {groupCurrentHole.strokeIndex}
-                            </Text>
+                            <View {...groupPanResponder.panHandlers}>
+                              <Text style={styles.meta}>
+                                {groupCurrentHole.name} • {groupCurrentHole.yardage} yds • Par {groupCurrentHole.par} • SI {groupCurrentHole.strokeIndex}
+                              </Text>
+                            </View>
                             {members.map((player) => (
-                              <View key={player.id} style={styles.scoreRow}>
+                              <View key={player.id} style={styles.scoreRow} {...groupPanResponder.panHandlers}>
                                 <View style={styles.scoreInfo}>
                                   <Text style={styles.itemText}>{player.name}</Text>
                                   <Text style={styles.meta}>
@@ -1729,9 +1782,9 @@ export default function App() {
                     </View>
                   </>
                 ) : (
-                  <>
+                  <View {...playerEntryPanResponder.panHandlers}>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                      {rankedPlayers.map((player) => {
+                      {groupedScoreEntryPlayers.map((player) => {
                         const active = player.id === scoreEntryPlayer?.id;
                         return (
                           <Pressable
@@ -1756,7 +1809,7 @@ export default function App() {
                             {round.groups.find((group) => group.id === scoreEntryPlayer.groupId)?.name ?? "Group"} • {teeForPlayer(round.tees, scoreEntryPlayer.teeId)?.name ?? "Tee"} • HI {scoreEntryPlayer.handicap}
                           </Text>
                           <Text style={styles.meta}>
-                            Enter the whole round for one player here. Tap the points box to open the round summary view.
+                            Enter the whole round for one player here. Swipe left or right for the next player. Tap the points box to open the round summary view.
                           </Text>
                         </View>
                         {scoreEntryCourse.map((hole) => (
@@ -1815,7 +1868,7 @@ export default function App() {
                         <Text style={styles.meta}>Add players before using player-by-player score entry.</Text>
                       </View>
                     )}
-                  </>
+                  </View>
                 )}
               </>
             ) : null}
