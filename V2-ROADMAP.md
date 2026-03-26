@@ -6,6 +6,25 @@ Version 2 should let a player stand on a new course, scan a physical scorecard o
 
 Version 2 should also introduce a true shared scorecard flow so multiple players can follow scoring during the round instead of only logging results afterwards.
 
+## Release split
+
+- V1 is now in maintenance mode and should only take bug fixes and security fixes.
+- All new feature work should target the V2 branch and V2 storage model.
+
+## UK-first assumptions
+
+- V2 should launch around GB&I course and handicap expectations first.
+- Manual course creation and scorecard review must work even if no external database is connected.
+- Tee data should be rich enough to support UK use of par, course rating, slope rating, stroke indexes, and named tees.
+- Handicap entry should move toward `Handicap Index in, Course/Playing Handicap out` with manual override kept for edge cases.
+
+## Core V2 bets
+
+- Build a reusable course library as a first-class feature.
+- Add a scorecard import flow with photo capture, OCR assist, and a mandatory review step.
+- Keep a blank/manual course flow as a permanent fallback.
+- Treat Fairway's stored course record as the final source of truth, even when data comes from scan or lookup.
+
 ## Scorecard scanning flow
 
 1. Open a new "Add course" flow.
@@ -35,6 +54,8 @@ Version 2 should also introduce a true shared scorecard flow so multiple players
 - Let rounds reference a saved course instead of always embedding one fixed default course.
 - Store tee-specific yardages, ratings, and slope values independently.
 - Keep a per-hole structure that supports imported names, pars, and stroke indexes.
+- Leave room for tee-specific rating profiles so a tee can support multiple handicap-calculation contexts later.
+- Version the storage schema separately from V1 so migration can happen once and V1 data can stay untouched as backup.
 
 ## Likely V2 screens
 
@@ -74,6 +95,7 @@ Version 2 should also introduce a true shared scorecard flow so multiple players
 - The shared scorecard should probably be built around a grid or matrix layout with sticky player and hole labels.
 - V2 should decide whether shared scoring is single-device only first, or whether multi-device sync is in scope.
 - Live entry should avoid copying the V1 screen structure too closely so the two versions feel intentionally different.
+- A separate V2 local storage file should coexist with the V1 storage file so migration can be tested safely.
 
 ## V1 decisions to keep compatible with V2
 
