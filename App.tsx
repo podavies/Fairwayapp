@@ -47,6 +47,12 @@ type RoundState = {
   ghosts: Record<string, string | null>;
 };
 type SavedRound = RoundState & { savedAt: string };
+type SavedCourse = {
+  id: string;
+  name: string;
+  tees: TeeSet[];
+  savedAt: string;
+};
 type Tab = "setup" | "live" | "saved";
 type ScoreEntryMode = "group" | "player";
 type LiveSection = "groups" | "players" | "entry";
@@ -238,13 +244,24 @@ function syncGhosts(players: Player[], groups: Group[], current: Record<string, 
 function cloneRound(round: RoundState): RoundState {
   return {
     ...round,
-    tees: round.tees.map((tee) => ({
-      ...tee,
-      course: tee.course.map((hole) => ({ ...hole })),
-    })),
+    tees: cloneTees(round.tees),
     groups: round.groups.map((group) => ({ ...group })),
     players: round.players.map((player) => ({ ...player, scores: { ...player.scores } })),
     ghosts: { ...round.ghosts },
+  };
+}
+
+function cloneTees(tees: TeeSet[]): TeeSet[] {
+  return tees.map((tee) => ({
+    ...tee,
+    course: tee.course.map((hole) => ({ ...hole })),
+  }));
+}
+
+function cloneSavedCourse(course: SavedCourse): SavedCourse {
+  return {
+    ...course,
+    tees: cloneTees(course.tees),
   };
 }
 
@@ -284,11 +301,21 @@ function normalizeTees(tees?: TeeSet[], legacyCourse?: Hole[]) {
     const existing = teeMap.get(definition.id);
     return {
       ...definition,
+      name: existing?.name ?? definition.name,
       courseRating: existing?.courseRating ?? definition.courseRating,
       slopeRating: existing?.slopeRating ?? definition.slopeRating,
       course: normalizeCourse(existing?.course ?? legacyCourse, definition.yardages),
     };
   });
+}
+
+function normalizeSavedCourse(course: SavedCourse): SavedCourse {
+  return {
+    id: course.id || id("course"),
+    name: course.name?.trim() || DEFAULT_COURSE_NAME,
+    tees: normalizeTees(course.tees),
+    savedAt: course.savedAt || new Date().toISOString(),
+  };
 }
 
 function normalizeRound(round: RoundState): RoundState {
@@ -499,6 +526,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("setup");
   const [round, setRound] = useState<RoundState>(() => blankRound());
   const [savedRounds, setSavedRounds] = useState<SavedRound[]>([]);
+  const [savedCourses, setSavedCourses] = useState<SavedCourse[]>([]);
   const [selectedHole, setSelectedHole] = useState(1);
   const [draftName, setDraftName] = useState("");
   const [draftHandicap, setDraftHandicap] = useState("18");
@@ -513,7 +541,7 @@ export default function App() {
   const [liveSection, setLiveSection] = useState<LiveSection>("entry");
   const [storageReady, setStorageReady] = useState(false);
   const [storageMessage, setStorageMessage] = useState(
-    STORAGE_URI ? "Loading saved rounds on this device. Current round resets on app open..." : "Local storage is unavailable here.",
+    STORAGE_URI ? "Loading saved rounds and courses on this device. Current round resets on app open..." : "Local storage is unavailable here.",
   );
 
   useEffect(() => {
@@ -528,6 +556,7 @@ export default function App() {
         if (info.exists) {
           const parsed = JSON.parse(await FileSystem.readAsStringAsync(STORAGE_URI)) as {
             savedRounds?: SavedRound[];
+            savedCourses?: SavedCourse[];
           };
           if (!cancelled && parsed.savedRounds) {
             setSavedRounds(
@@ -537,14 +566,17 @@ export default function App() {
               })),
             );
           }
+          if (!cancelled && parsed.savedCourses) {
+            setSavedCourses(parsed.savedCourses.map((item) => normalizeSavedCourse(item)));
+          }
         }
         if (!cancelled) {
-          setStorageMessage("Saved rounds stay on this device. Current round resets each time the app opens.");
+          setStorageMessage("Saved rounds and courses stay on this device. Current round resets each time the app opens.");
           setStorageReady(true);
         }
       } catch {
         if (!cancelled) {
-          setStorageMessage("Could not load saved rounds. The app is still ready to use.");
+          setStorageMessage("Could not load saved rounds and courses. The app is still ready to use.");
           setStorageReady(true);
         }
       }
@@ -567,10 +599,13 @@ export default function App() {
           JSON.stringify({
             activeRound: cloneRound(round),
             savedRounds: savedRounds.map((item) => ({ ...cloneRound(item), savedAt: item.savedAt })),
+            savedCourses: savedCourses.map((item) => cloneSavedCourse(item)),
           }),
         );
         if (!cancelled) {
-          setStorageMessage(`Saved ${savedRounds.length} round${savedRounds.length === 1 ? "" : "s"} on this device.`);
+          setStorageMessage(
+            `Saved ${savedRounds.length} round${savedRounds.length === 1 ? "" : "s"} and ${savedCourses.length} course${savedCourses.length === 1 ? "" : "s"} on this device.`,
+          );
         }
       } catch {
         if (!cancelled) {
@@ -582,7 +617,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [round, savedRounds, storageReady]);
+  }, [round, savedCourses, savedRounds, storageReady]);
 
   useEffect(() => {
     const firstGroupId = round.groups[0]?.id ?? "";
@@ -721,6 +756,31 @@ export default function App() {
     });
   };
 
+  const saveCurrentCourseToLibrary = () => {
+    setSavedCourses((current) => [
+      {
+        id: id("course"),
+        name: round.courseName.trim() || DEFAULT_COURSE_NAME,
+        tees: cloneTees(round.tees),
+        savedAt: new Date().toISOString(),
+      },
+      ...current,
+    ]);
+  };
+
+  const loadSavedCourse = (savedCourse: SavedCourse) => {
+    setRound((current) =>
+      normalizeRound({
+        ...current,
+        courseName: savedCourse.name,
+        tees: cloneTees(savedCourse.tees),
+      }),
+    );
+    setSelectedTeeId(savedCourse.tees[0]?.id ?? "white");
+    setCourseSetupExpanded(false);
+    setTab("setup");
+  };
+
   const invalidGroups = round.groups.filter((group) => {
     const size = round.players.filter((player) => player.groupId === group.id).length;
     return size !== 3 && size !== 4;
@@ -777,7 +837,7 @@ export default function App() {
   });
 
   const updatePlayerScore = (playerId: string, holeNumber: number, value: string) => {
-    const nextScore = value === BLOB_SCORE ? BLOB_SCORE : value.replace(/[^0-9]/g, "").slice(0, 1);
+    const nextScore = value === BLOB_SCORE ? BLOB_SCORE : value.replace(/[^0-9]/g, "").slice(0, 2);
     setRound((current) => ({
       ...current,
       players: current.players.map((currentPlayer) =>
@@ -826,10 +886,14 @@ export default function App() {
     currentKey: string,
     onComplete?: () => void,
   ) => {
-    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 1);
+    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 2);
     updatePlayerScore(playerId, holeNumber, sanitized);
 
     if (!sanitized) {
+      return;
+    }
+
+    if (sanitized.length < 2 && Number(sanitized) < 10) {
       return;
     }
 
@@ -993,7 +1057,7 @@ export default function App() {
                     setRound((current) => ({
                       ...current,
                       tees: current.tees.map((tee) =>
-                        tee.id === selectedTeeId ? { ...tee, name: value.slice(0, 18) || tee.name } : tee,
+                        tee.id === selectedTeeId ? { ...tee, name: value.slice(0, 18) } : tee,
                       ),
                     }))
                   }
@@ -1049,18 +1113,24 @@ export default function App() {
                     />
                   </View>
                 </View>
-                <Pressable
-                  onPress={() =>
-                    setRound((current) => ({
-                      ...current,
-                      courseName: DEFAULT_COURSE_NAME,
-                      tees: defaultTees(),
-                    }))
-                  }
-                  style={styles.smallButton}
-                >
-                  <Text style={styles.smallButtonText}>Reset default course</Text>
-                </Pressable>
+                <Text style={styles.meta}>Save the current course and tee setup so you can reuse it in later rounds.</Text>
+                <View style={styles.buttonRow}>
+                  <Pressable onPress={saveCurrentCourseToLibrary} style={styles.primaryButton}>
+                    <Text style={styles.primaryText}>Save course to library</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() =>
+                      setRound((current) => ({
+                        ...current,
+                        courseName: DEFAULT_COURSE_NAME,
+                        tees: defaultTees(),
+                      }))
+                    }
+                    style={styles.secondaryButton}
+                  >
+                    <Text style={styles.secondaryText}>Reset default course</Text>
+                  </Pressable>
+                </View>
               </View>
               {courseSetupExpanded ? (
                 <>
@@ -1191,6 +1261,45 @@ export default function App() {
                 </>
               ) : (
                 <Text style={styles.meta}>Course details are collapsed to keep setup shorter. Tap `Show holes` when you want to edit all 18.</Text>
+              )}
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.rowBetween}>
+                <Text style={styles.cardTitle}>Course library</Text>
+                <Text style={styles.meta}>{savedCourses.length} saved</Text>
+              </View>
+              <Text style={styles.sectionSubtitle}>Reuse a saved course instead of typing all 18 holes again.</Text>
+              {savedCourses.length === 0 ? (
+                <Text style={styles.meta}>No saved courses yet. Edit the course above, then tap `Save course to library`.</Text>
+              ) : (
+                savedCourses.map((savedCourse) => {
+                  const teeSummary = savedCourse.tees
+                    .map((tee) => tee.name.trim() || "Unnamed tee")
+                    .join(" • ");
+                  const firstTee = savedCourse.tees[0];
+                  const totalPar = firstTee?.course.reduce((sum, hole) => sum + hole.par, 0) ?? 0;
+                  return (
+                    <View key={savedCourse.id} style={styles.subCard}>
+                      <Text style={styles.itemTitle}>{savedCourse.name}</Text>
+                      <Text style={styles.meta}>
+                        {savedCourse.tees.length} tees • Par {totalPar} • Saved {formatDate(savedCourse.savedAt)}
+                      </Text>
+                      <Text style={styles.itemText}>{teeSummary}</Text>
+                      <View style={styles.buttonRow}>
+                        <Pressable onPress={() => loadSavedCourse(savedCourse)} style={styles.primaryButton}>
+                          <Text style={styles.primaryText}>Load course</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => setSavedCourses((current) => current.filter((item) => item.id !== savedCourse.id))}
+                          style={styles.secondaryButton}
+                        >
+                          <Text style={styles.secondaryText}>Delete</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })
               )}
             </View>
 
@@ -1750,7 +1859,7 @@ export default function App() {
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={1}
+                              maxLength={2}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -1837,7 +1946,7 @@ export default function App() {
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={1}
+                              maxLength={2}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -1953,6 +2062,7 @@ export default function App() {
           <Text style={styles.noteText}>Individual ties are split by countback on the last 9 holes, then last 6, last 3, and final hole.</Text>
           <Text style={styles.noteText}>In mixed fields, the shared ghost player stays with every 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
+          <Text style={styles.noteText}>Saved courses are also written to local device storage so they can be reused in later rounds on the same device.</Text>
         </View>
       </ScrollView>
       <Modal
