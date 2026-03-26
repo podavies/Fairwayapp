@@ -2,7 +2,7 @@
   "expo": {
     "name": "Fairway",
     "slug": "fairway-mobile",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.podavies.fairway",
-      "buildNumber": "10",
+      "buildNumber": "11",
       "config": {
         "usesNonExemptEncryption": false
       }
