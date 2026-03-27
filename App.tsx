@@ -2,8 +2,11 @@ import { StatusBar } from "expo-status-bar";
 import * as FileSystem from "expo-file-system/legacy";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,6 +15,19 @@ import {
   TextInput,
   View,
 } from "react-native";
+import {
+  BLOB_SCORE,
+  buildScoreEntryRunningTotals,
+  completed as calculateCompleted,
+  holeForPlayer as calculateHoleForPlayer,
+  holePoints as calculateHolePoints,
+  playerHolePoints as calculatePlayerHolePoints,
+  scoreDisplayValue,
+  scoreEntered,
+  strokes,
+  teeForPlayer as calculateTeeForPlayer,
+  totalPoints as calculateTotalPoints,
+} from "./src/scoring";
 
 type Hole = {
   number: number;
@@ -52,6 +68,13 @@ type SavedCourse = {
   name: string;
   tees: TeeSet[];
   savedAt: string;
+};
+type SavedPlayerProfile = {
+  id: string;
+  name: string;
+  handicap: number;
+  teeId: string | null;
+  updatedAt: string;
 };
 type Tab = "setup" | "live" | "saved";
 type ScoreEntryMode = "group" | "player";
@@ -110,40 +133,126 @@ const defaultGroups = () => [
   { id: id("group"), name: "Group 1" },
   { id: id("group"), name: "Group 2" },
 ];
-const strokes = (handicap: number, strokeIndex: number) =>
-  Math.floor(handicap / 18) + (strokeIndex <= handicap % 18 ? 1 : 0);
-const stableford = (gross: number, par: number, shots: number) =>
-  Math.max(0, 2 + par - (gross - shots));
-const BLOB_SCORE = "B";
-const scoreEntered = (value: string | undefined) => value === BLOB_SCORE || Number(value) > 0;
-const scoreDisplayValue = (value: string | undefined) => (value === BLOB_SCORE ? "✓" : value ?? "");
-const holePoints = (player: Player, hole: Hole) => {
-  const value = player.scores[hole.number];
-  if (!scoreEntered(value) || value === BLOB_SCORE) {
-    return 0;
-  }
-  return stableford(Number(value), hole.par, strokes(player.handicap, hole.strokeIndex));
-};
+const cleanPlayerName = (value: string) => value.trim().replace(/\s+/g, " ").slice(0, 24);
+const playerProfileKey = (value: string) => cleanPlayerName(value).toLowerCase();
+const holePoints = (player: Player, hole: Hole) => calculateHolePoints(player, hole);
 function teeForPlayer(tees: TeeSet[], teeId: string) {
-  return tees.find((tee) => tee.id === teeId) ?? tees[0];
+  return calculateTeeForPlayer(tees, teeId);
 }
 
 function holeForPlayer(tees: TeeSet[], player: Player, holeNumber: number) {
-  const tee = teeForPlayer(tees, player.teeId);
-  return tee?.course.find((hole) => hole.number === holeNumber) ?? defaultCourse[holeNumber - 1];
+  return calculateHoleForPlayer(tees, player, holeNumber, defaultCourse) ?? defaultCourse[holeNumber - 1];
 }
 
 const totalPoints = (player: Player, tees: TeeSet[]) =>
-  (teeForPlayer(tees, player.teeId)?.course ?? defaultCourse).reduce(
-    (sum, hole) => sum + holePoints(player, hole),
-    0,
-  );
+  calculateTotalPoints(player, tees, defaultCourse);
 const playerHolePoints = (player: Player, tees: TeeSet[]) =>
-  (teeForPlayer(tees, player.teeId)?.course ?? defaultCourse).map((hole) => holePoints(player, hole));
+  calculatePlayerHolePoints(player, tees, defaultCourse);
 const completed = (player: Player, tees: TeeSet[]) =>
-  (teeForPlayer(tees, player.teeId)?.course ?? defaultCourse).filter((hole) =>
-    scoreEntered(player.scores[hole.number]),
-  ).length;
+  calculateCompleted(player, tees, defaultCourse);
+
+function cloneSavedPlayerProfile(profile: SavedPlayerProfile): SavedPlayerProfile {
+  return { ...profile };
+}
+
+function savedPlayerProfileSignature(profile: SavedPlayerProfile) {
+  return [
+    profile.id,
+    profile.name,
+    String(profile.handicap),
+    profile.teeId ?? "",
+    profile.updatedAt,
+  ].join("|");
+}
+
+function mergePlayerProfiles(
+  current: SavedPlayerProfile[],
+  players: Array<Pick<Player, "name" | "handicap" | "teeId">>,
+) {
+  const profileMap = new Map<string, SavedPlayerProfile>();
+
+  current.forEach((profile) => {
+    const name = cleanPlayerName(profile.name);
+    if (!name) {
+      return;
+    }
+
+    const normalized: SavedPlayerProfile = {
+      id: profile.id || id("profile"),
+      name,
+      handicap: Math.max(0, Math.round(Number(profile.handicap) || 0)),
+      teeId: profile.teeId || null,
+      updatedAt: profile.updatedAt || new Date().toISOString(),
+    };
+    const key = playerProfileKey(name);
+    const existing = profileMap.get(key);
+
+    if (!existing || existing.updatedAt.localeCompare(normalized.updatedAt) < 0) {
+      profileMap.set(key, normalized);
+    }
+  });
+
+  players.forEach((player) => {
+    const name = cleanPlayerName(player.name);
+    if (!name) {
+      return;
+    }
+
+    const key = playerProfileKey(name);
+    const existing = profileMap.get(key);
+    const handicap = Math.max(0, Math.round(Number(player.handicap) || 0));
+    const teeId = player.teeId || null;
+
+    if (!existing) {
+      profileMap.set(key, {
+        id: id("profile"),
+        name,
+        handicap,
+        teeId,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    if (existing.name !== name || existing.handicap !== handicap || existing.teeId !== teeId) {
+      profileMap.set(key, {
+        ...existing,
+        name,
+        handicap,
+        teeId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  const next = [...profileMap.values()].sort(
+    (a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name),
+  );
+
+  if (next.length !== current.length) {
+    return next;
+  }
+
+  for (let index = 0; index < next.length; index += 1) {
+    if (savedPlayerProfileSignature(next[index]) !== savedPlayerProfileSignature(current[index])) {
+      return next;
+    }
+  }
+
+  return current;
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function storageSummaryMessage(savedRoundCount: number, savedCourseCount: number, savedPlayerCount: number) {
+  if (savedRoundCount === 0 && savedCourseCount === 0 && savedPlayerCount === 0) {
+    return "No saved rounds, courses, or player profiles yet. Current round still resets when the app opens.";
+  }
+
+  return `Saved ${pluralize(savedRoundCount, "round")}, ${pluralize(savedCourseCount, "course")}, and ${pluralize(savedPlayerCount, "player profile", "player profiles")} on this device. Current round still resets when the app opens.`;
+}
 
 function countbackTotals(points: number[]) {
   return [9, 6, 3, 1].map((holes) => points.slice(-holes).reduce((sum, value) => sum + value, 0));
@@ -527,6 +636,7 @@ export default function App() {
   const [round, setRound] = useState<RoundState>(() => blankRound());
   const [savedRounds, setSavedRounds] = useState<SavedRound[]>([]);
   const [savedCourses, setSavedCourses] = useState<SavedCourse[]>([]);
+  const [savedPlayerProfiles, setSavedPlayerProfiles] = useState<SavedPlayerProfile[]>([]);
   const [selectedHole, setSelectedHole] = useState(1);
   const [draftName, setDraftName] = useState("");
   const [draftHandicap, setDraftHandicap] = useState("18");
@@ -541,7 +651,9 @@ export default function App() {
   const [liveSection, setLiveSection] = useState<LiveSection>("entry");
   const [storageReady, setStorageReady] = useState(false);
   const [storageMessage, setStorageMessage] = useState(
-    STORAGE_URI ? "Loading saved rounds and courses on this device. Current round resets on app open..." : "Local storage is unavailable here.",
+    STORAGE_URI
+      ? "Loading saved rounds, courses, and player suggestions on this device. Current round resets on app open..."
+      : "Local storage is unavailable here.",
   );
 
   useEffect(() => {
@@ -552,31 +664,47 @@ export default function App() {
     let cancelled = false;
     const load = async () => {
       try {
+        let savedRoundCount = 0;
+        let savedCourseCount = 0;
+        let savedPlayerCount = 0;
         const info = await FileSystem.getInfoAsync(STORAGE_URI);
         if (info.exists) {
           const parsed = JSON.parse(await FileSystem.readAsStringAsync(STORAGE_URI)) as {
+            activeRound?: RoundState;
             savedRounds?: SavedRound[];
             savedCourses?: SavedCourse[];
+            savedPlayers?: SavedPlayerProfile[];
           };
-          if (!cancelled && parsed.savedRounds) {
-            setSavedRounds(
-              parsed.savedRounds.map((item) => ({
-                ...normalizeRound(item as RoundState),
-                savedAt: item.savedAt,
-              })),
-            );
-          }
-          if (!cancelled && parsed.savedCourses) {
-            setSavedCourses(parsed.savedCourses.map((item) => normalizeSavedCourse(item)));
+
+          const loadedRounds = (parsed.savedRounds ?? []).map((item) => ({
+            ...normalizeRound(item as RoundState),
+            savedAt: item.savedAt,
+          }));
+          const loadedCourses = (parsed.savedCourses ?? []).map((item) => normalizeSavedCourse(item));
+          const seededProfiles = mergePlayerProfiles(
+            parsed.savedPlayers ?? [],
+            [
+              ...loadedRounds.flatMap((item) => item.players),
+              ...(parsed.activeRound ? normalizeRound(parsed.activeRound).players : []),
+            ],
+          );
+          savedRoundCount = loadedRounds.length;
+          savedCourseCount = loadedCourses.length;
+          savedPlayerCount = seededProfiles.length;
+
+          if (!cancelled) {
+            setSavedRounds(loadedRounds);
+            setSavedCourses(loadedCourses);
+            setSavedPlayerProfiles(seededProfiles);
           }
         }
         if (!cancelled) {
-          setStorageMessage("Saved rounds and courses stay on this device. Current round resets each time the app opens.");
+          setStorageMessage(storageSummaryMessage(savedRoundCount, savedCourseCount, savedPlayerCount));
           setStorageReady(true);
         }
       } catch {
         if (!cancelled) {
-          setStorageMessage("Could not load saved rounds and courses. The app is still ready to use.");
+          setStorageMessage("Could not load saved rounds, courses, or player suggestions. The app is still ready to use.");
           setStorageReady(true);
         }
       }
@@ -600,12 +728,11 @@ export default function App() {
             activeRound: cloneRound(round),
             savedRounds: savedRounds.map((item) => ({ ...cloneRound(item), savedAt: item.savedAt })),
             savedCourses: savedCourses.map((item) => cloneSavedCourse(item)),
+            savedPlayers: savedPlayerProfiles.map((item) => cloneSavedPlayerProfile(item)),
           }),
         );
         if (!cancelled) {
-          setStorageMessage(
-            `Saved ${savedRounds.length} round${savedRounds.length === 1 ? "" : "s"} and ${savedCourses.length} course${savedCourses.length === 1 ? "" : "s"} on this device.`,
-          );
+          setStorageMessage(storageSummaryMessage(savedRounds.length, savedCourses.length, savedPlayerProfiles.length));
         }
       } catch {
         if (!cancelled) {
@@ -617,7 +744,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [round, savedCourses, savedRounds, storageReady]);
+  }, [round, savedCourses, savedPlayerProfiles, savedRounds, storageReady]);
 
   useEffect(() => {
     const firstGroupId = round.groups[0]?.id ?? "";
@@ -745,6 +872,32 @@ export default function App() {
         .sort((a, b) => b.total - a.total),
     [playerMap, rankedPlayers, round.ghosts, round.groups, round.players, round.tees, scoringSummary, selectedHole],
   );
+  const draftNameQuery = playerProfileKey(draftName);
+  const draftPlayerSuggestions = useMemo(() => {
+    if (!draftNameQuery) {
+      return [];
+    }
+
+    return savedPlayerProfiles
+      .filter((profile) => {
+        const key = playerProfileKey(profile.name);
+        return key.includes(draftNameQuery) && key !== draftNameQuery;
+      })
+      .sort((a, b) => {
+        const aStartsWith = playerProfileKey(a.name).startsWith(draftNameQuery);
+        const bStartsWith = playerProfileKey(b.name).startsWith(draftNameQuery);
+        if (aStartsWith !== bStartsWith) {
+          return aStartsWith ? -1 : 1;
+        }
+
+        return b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name);
+      })
+      .slice(0, 5);
+  }, [draftNameQuery, savedPlayerProfiles]);
+  const scoreEntryRunningTotals = useMemo(
+    () => (scoreEntryPlayer ? buildScoreEntryRunningTotals(scoreEntryPlayer, round.tees, defaultCourse) : null),
+    [round.tees, scoreEntryPlayer],
+  );
 
   const setRoster = (updater: (current: RoundState) => RoundState, forceGhostRedraw = false) => {
     setRound((current) => {
@@ -754,6 +907,30 @@ export default function App() {
         ghosts: syncGhosts(next.players, next.groups, next.ghosts, forceGhostRedraw),
       };
     });
+  };
+  const rememberPlayerProfile = (player: Pick<Player, "name" | "handicap" | "teeId">) => {
+    setSavedPlayerProfiles((current) => mergePlayerProfiles(current, [player]));
+  };
+  const applySavedPlayerProfile = (profile: SavedPlayerProfile) => {
+    setDraftName(profile.name);
+    setDraftHandicap(String(profile.handicap));
+    if (profile.teeId && round.tees.some((tee) => tee.id === profile.teeId)) {
+      setDraftTeeId(profile.teeId);
+    }
+  };
+  const handleDraftNameChange = (value: string) => {
+    const nextName = value.slice(0, 24);
+    setDraftName(nextName);
+
+    const exactMatch = savedPlayerProfiles.find(
+      (profile) => playerProfileKey(profile.name) === playerProfileKey(nextName),
+    );
+    if (exactMatch) {
+      setDraftHandicap(String(exactMatch.handicap));
+      if (exactMatch.teeId && round.tees.some((tee) => tee.id === exactMatch.teeId)) {
+        setDraftTeeId(exactMatch.teeId);
+      }
+    }
   };
 
   const saveCurrentCourseToLibrary = () => {
@@ -788,6 +965,10 @@ export default function App() {
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const playerEntryScrollRef = useRef<ScrollView | null>(null);
+  const playerEntryRowOffsets = useRef<Record<number, number>>({});
+  const pendingAdvanceTimeouts = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+  const [focusedPlayerEntryKey, setFocusedPlayerEntryKey] = useState<string | null>(null);
   const playerEntryKeys = useMemo(
     () => (scoreEntryPlayer ? scoreEntryCourse.map((hole) => `player:${scoreEntryPlayer.id}:${hole.number}`) : []),
     [scoreEntryCourse, scoreEntryPlayer],
@@ -820,6 +1001,19 @@ export default function App() {
     const nextIndex = Math.max(0, Math.min(groupedScoreEntryPlayers.length - 1, safeIndex + delta));
     setScoreEntryPlayerId(groupedScoreEntryPlayers[nextIndex]?.id ?? null);
   };
+
+  const selectScoreEntryPlayer = (playerId: string) => {
+    clearAllPendingAdvances();
+    Keyboard.dismiss();
+    setScoreEntryPlayerId(playerId);
+  };
+
+  const openPlayerSummary = (playerId: string) => {
+    clearAllPendingAdvances();
+    Keyboard.dismiss();
+    setSelectedPlayerId(playerId);
+  };
+
   const playerEntryPanResponder = PanResponder.create({
     onStartShouldSetPanResponderCapture: () => false,
     onMoveShouldSetPanResponderCapture: (_, gestureState) =>
@@ -848,6 +1042,22 @@ export default function App() {
     }));
   };
 
+  const clearPendingAdvance = (key: string) => {
+    const timeoutId = pendingAdvanceTimeouts.current[key];
+    if (!timeoutId) {
+      return;
+    }
+
+    clearTimeout(timeoutId);
+    delete pendingAdvanceTimeouts.current[key];
+  };
+
+  const clearAllPendingAdvances = () => {
+    Object.keys(pendingAdvanceTimeouts.current).forEach((key) => {
+      clearPendingAdvance(key);
+    });
+  };
+
   const toggleBlobScore = (
     playerId: string,
     holeNumber: number,
@@ -855,6 +1065,7 @@ export default function App() {
     currentKey: string,
     onComplete?: () => void,
   ) => {
+    clearPendingAdvance(currentKey);
     const currentValue = round.players.find((player) => player.id === playerId)?.scores[holeNumber];
     const nextValue = currentValue === BLOB_SCORE ? "" : BLOB_SCORE;
     updatePlayerScore(playerId, holeNumber, nextValue);
@@ -876,6 +1087,26 @@ export default function App() {
     }
 
     inputRefs.current[nextKey]?.focus();
+    if (nextKey.startsWith("player:")) {
+      setTimeout(() => {
+        scrollPlayerEntryInputIntoView(nextKey);
+      }, 80);
+    }
+  };
+
+  const advanceFromScoreInput = (
+    orderedKeys: string[],
+    currentKey: string,
+    onComplete?: () => void,
+  ) => {
+    clearPendingAdvance(currentKey);
+    const currentIndex = orderedKeys.indexOf(currentKey);
+    const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
+    if (nextKey) {
+      focusNextInput(nextKey);
+    } else {
+      onComplete?.();
+    }
   };
 
   const handleScoreInputChange = (
@@ -885,25 +1116,79 @@ export default function App() {
     orderedKeys: string[],
     currentKey: string,
     onComplete?: () => void,
+    maxDigits = 2,
   ) => {
-    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 2);
+    const sanitized = value.replace(/[^0-9]/g, "").slice(0, maxDigits);
     updatePlayerScore(playerId, holeNumber, sanitized);
+    clearPendingAdvance(currentKey);
 
     if (!sanitized) {
       return;
     }
 
-    if (sanitized.length < 2 && Number(sanitized) < 10) {
+    if (maxDigits === 1) {
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
       return;
     }
 
-    const currentIndex = orderedKeys.indexOf(currentKey);
-    const nextKey = currentIndex >= 0 ? orderedKeys[currentIndex + 1] : undefined;
-    if (nextKey) {
-      focusNextInput(nextKey);
-    } else {
-      onComplete?.();
+    if (sanitized.length >= 2 || Number(sanitized) >= 10) {
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
+      return;
     }
+
+    pendingAdvanceTimeouts.current[currentKey] = setTimeout(() => {
+      if (!inputRefs.current[currentKey]?.isFocused?.()) {
+        clearPendingAdvance(currentKey);
+        return;
+      }
+
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
+    }, 550);
+  };
+
+  useEffect(
+    () => () => {
+      clearAllPendingAdvances();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      setFocusedPlayerEntryKey(null);
+    });
+
+    return () => {
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "live" || liveSection !== "entry" || scoreEntryMode !== "player") {
+      setFocusedPlayerEntryKey(null);
+    }
+  }, [liveSection, scoreEntryMode, tab]);
+
+  const getHoleNumberFromPlayerEntryKey = (key: string) => {
+    const holeNumber = Number(key.split(":")[2]);
+    return Number.isFinite(holeNumber) ? holeNumber : null;
+  };
+
+  const scrollPlayerEntryInputIntoView = (key: string) => {
+    const holeNumber = getHoleNumberFromPlayerEntryKey(key);
+    if (holeNumber === null) {
+      return;
+    }
+
+    const rowOffset = playerEntryRowOffsets.current[holeNumber];
+    if (rowOffset === undefined) {
+      return;
+    }
+
+    playerEntryScrollRef.current?.scrollTo({
+      y: Math.max(0, rowOffset - 120),
+      animated: true,
+    });
   };
 
   const clearCurrentRound = () => {
@@ -934,8 +1219,19 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <KeyboardAvoidingView
+        style={styles.safeArea}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={12}
+      >
       <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        scrollEnabled={!focusedPlayerEntryKey}
+      >
         <View style={styles.hero}>
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
           <Text style={styles.heroTitle}>Create rollups, log scores, and save results in one app.</Text>
@@ -1360,11 +1656,35 @@ export default function App() {
               <Text style={styles.cardTitle}>Add player</Text>
               <TextInput
                 value={draftName}
-                onChangeText={setDraftName}
+                onChangeText={handleDraftNameChange}
                 placeholder="Player name"
                 placeholderTextColor="#8a877f"
                 style={styles.input}
               />
+              {draftPlayerSuggestions.length > 0 ? (
+                <View style={styles.subCard}>
+                  <Text style={styles.smallLabel}>Saved player matches</Text>
+                  {draftPlayerSuggestions.map((profile, index) => {
+                    const teeName = round.tees.find((tee) => tee.id === profile.teeId)?.name;
+                    return (
+                      <Pressable
+                        key={profile.id}
+                        onPress={() => applySavedPlayerProfile(profile)}
+                        style={[styles.suggestionRow, index === draftPlayerSuggestions.length - 1 && styles.suggestionRowLast]}
+                      >
+                        <View style={styles.suggestionCopy}>
+                          <Text style={styles.itemText}>{profile.name}</Text>
+                          <Text style={styles.meta}>
+                            HI {profile.handicap}
+                            {teeName ? ` • ${teeName}` : ""}
+                          </Text>
+                        </View>
+                        <Text style={styles.itemValue}>Use</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
               <TextInput
                 value={draftHandicap}
                 onChangeText={(value) => setDraftHandicap(value.replace(/[^0-9]/g, "").slice(0, 2))}
@@ -1403,10 +1723,15 @@ export default function App() {
               </ScrollView>
               <Pressable
                 onPress={() => {
-                  const name = draftName.trim();
+                  const name = cleanPlayerName(draftName);
                   if (!name || !draftGroupId) {
                     return;
                   }
+                  rememberPlayerProfile({
+                    name,
+                    handicap: Number(draftHandicap || "0"),
+                    teeId: draftTeeId,
+                  });
                   setRoster((current) => ({
                     ...current,
                     players: [
@@ -1461,6 +1786,20 @@ export default function App() {
                           ),
                         }))
                       }
+                      onEndEditing={() => {
+                        const nextName = cleanPlayerName(player.name);
+                        setRoster((current) => ({
+                          ...current,
+                          players: current.players.map((currentPlayer) =>
+                            currentPlayer.id === player.id ? { ...currentPlayer, name: nextName } : currentPlayer,
+                          ),
+                        }));
+                        rememberPlayerProfile({
+                          name: nextName,
+                          handicap: player.handicap,
+                          teeId: player.teeId,
+                        });
+                      }}
                       placeholder="Player name"
                       placeholderTextColor="#8a877f"
                       style={styles.input}
@@ -1477,6 +1816,13 @@ export default function App() {
                           ),
                         }))
                       }
+                      onEndEditing={() =>
+                        rememberPlayerProfile({
+                          name: player.name,
+                          handicap: player.handicap,
+                          teeId: player.teeId,
+                        })
+                      }
                       keyboardType="number-pad"
                       placeholder="Handicap"
                       placeholderTextColor="#8a877f"
@@ -1488,14 +1834,19 @@ export default function App() {
                         return (
                           <Pressable
                             key={tee.id}
-                            onPress={() =>
+                            onPress={() => {
                               setRoster((current) => ({
                                 ...current,
                                 players: current.players.map((currentPlayer) =>
                                   currentPlayer.id === player.id ? { ...currentPlayer, teeId: tee.id } : currentPlayer,
                                 ),
-                              }))
-                            }
+                              }));
+                              rememberPlayerProfile({
+                                name: player.name,
+                                handicap: player.handicap,
+                                teeId: tee.id,
+                              });
+                            }}
                             style={[styles.chip, active && styles.chipActive]}
                           >
                             <Text style={[styles.chipText, active && styles.chipTextActive]}>{tee.name}</Text>
@@ -1854,12 +2205,13 @@ export default function App() {
                                   groupEntryKeys,
                                   `group:${group.id}:${groupSelectedHole}:${player.id}`,
                                   advanceToNextGroupHole,
+                                  1,
                                 )
                               }
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={2}
+                              maxLength={1}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -1879,7 +2231,7 @@ export default function App() {
                                     Blob
                                   </Text>
                                 </Pressable>
-                                <Pressable onPress={() => setSelectedPlayerId(player.id)} style={styles.pointsBox}>
+                                <Pressable onPress={() => openPlayerSummary(player.id)} style={styles.pointsBox}>
                                   <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, groupSelectedHole))}</Text>
                                   <Text style={styles.badgeLabel}>pts</Text>
                                 </Pressable>
@@ -1892,13 +2244,18 @@ export default function App() {
                   </>
                 ) : (
                   <View {...playerEntryPanResponder.panHandlers}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.chipRow}
+                      keyboardShouldPersistTaps="handled"
+                    >
                       {groupedScoreEntryPlayers.map((player) => {
                         const active = player.id === scoreEntryPlayer?.id;
                         return (
                           <Pressable
                             key={player.id}
-                            onPress={() => setScoreEntryPlayerId(player.id)}
+                            onPress={() => selectScoreEntryPlayer(player.id)}
                             style={[styles.playerChip, active && styles.playerChipActive]}
                           >
                             <Text style={[styles.playerChipName, active && styles.playerChipNameActive]}>{player.name}</Text>
@@ -1911,7 +2268,7 @@ export default function App() {
                     </ScrollView>
 
                     {scoreEntryPlayer ? (
-                      <View style={styles.card}>
+                      <View style={[styles.card, styles.playerEntryCard]}>
                         <View style={styles.subCard}>
                           <Text style={styles.itemTitle}>{scoreEntryPlayer.name}</Text>
                           <Text style={styles.meta}>
@@ -1921,56 +2278,100 @@ export default function App() {
                             Enter the whole round for one player here. Swipe left or right for the next player. Tap the points box to open the round summary view.
                           </Text>
                         </View>
-                        {scoreEntryCourse.map((hole) => (
-                          <View key={hole.number} style={styles.playerEntryRow}>
-                            <View style={styles.playerEntryInfo}>
-                              <Text style={styles.itemText}>Hole {hole.number} • {hole.name}</Text>
-                              <Text style={styles.meta}>
-                                Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds • Gets {strokes(scoreEntryPlayer.handicap, hole.strokeIndex)} shot{strokes(scoreEntryPlayer.handicap, hole.strokeIndex) === 1 ? "" : "s"}
-                              </Text>
+                        <View style={styles.playerEntryBody}>
+                          <ScrollView
+                            ref={playerEntryScrollRef}
+                            style={styles.playerEntryList}
+                            contentContainerStyle={styles.playerEntryListContent}
+                            nestedScrollEnabled
+                            keyboardShouldPersistTaps="always"
+                            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                          >
+                            {scoreEntryCourse.map((hole) => {
+                              const inputKey = `player:${scoreEntryPlayer.id}:${hole.number}`;
+                              return (
+                                <View
+                                  key={hole.number}
+                                  style={styles.playerEntryRow}
+                                  onLayout={(event) => {
+                                    playerEntryRowOffsets.current[hole.number] = event.nativeEvent.layout.y;
+                                  }}
+                                >
+                                  <View style={styles.playerEntryInfo}>
+                                    <Text style={styles.itemText}>Hole {hole.number} • {hole.name}</Text>
+                                    <Text style={styles.meta}>
+                                      Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds • Gets {strokes(scoreEntryPlayer.handicap, hole.strokeIndex)} shot{strokes(scoreEntryPlayer.handicap, hole.strokeIndex) === 1 ? "" : "s"}
+                                    </Text>
+                                  </View>
+                                  <TextInput
+                                    ref={(ref) => {
+                                      inputRefs.current[inputKey] = ref;
+                                    }}
+                                    value={scoreDisplayValue(scoreEntryPlayer.scores[hole.number])}
+                                    onChangeText={(value) =>
+                                      handleScoreInputChange(
+                                        scoreEntryPlayer.id,
+                                        hole.number,
+                                        value,
+                                        playerEntryKeys,
+                                        inputKey,
+                                        undefined,
+                                        1,
+                                      )
+                                    }
+                                    keyboardType="number-pad"
+                                    placeholder="Score"
+                                    placeholderTextColor="#8a877f"
+                                    maxLength={1}
+                                    blurOnSubmit={false}
+                                    onFocus={() => {
+                                      setFocusedPlayerEntryKey(inputKey);
+                                      scrollPlayerEntryInputIntoView(inputKey);
+                                    }}
+                                    style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
+                                  />
+                                  <Pressable
+                                    onPress={() =>
+                                      toggleBlobScore(
+                                        scoreEntryPlayer.id,
+                                        hole.number,
+                                        playerEntryKeys,
+                                        inputKey,
+                                      )
+                                    }
+                                    style={[styles.blobButton, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonActive]}
+                                  >
+                                    <Text style={[styles.blobButtonText, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
+                                      Blob
+                                    </Text>
+                                  </Pressable>
+                                  <Pressable onPress={() => openPlayerSummary(scoreEntryPlayer.id)} style={styles.pointsBox}>
+                                    <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
+                                    <Text style={styles.badgeLabel}>pts</Text>
+                                  </Pressable>
+                                </View>
+                              );
+                            })}
+                          </ScrollView>
+                          {scoreEntryRunningTotals ? (
+                            <View style={styles.entryTotalsBar}>
+                              <View style={styles.entryTotalCard}>
+                                <Text style={styles.smallLabel}>Running shots</Text>
+                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.shots}</Text>
+                                <Text style={styles.meta}>
+                                  {scoreEntryRunningTotals.grossLogged} gross score{scoreEntryRunningTotals.grossLogged === 1 ? "" : "s"} logged
+                                </Text>
+                              </View>
+                              <View style={styles.entryTotalCard}>
+                                <Text style={styles.smallLabel}>Running points</Text>
+                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.points}</Text>
+                                <Text style={styles.meta}>
+                                  {scoreEntryRunningTotals.holesLogged}/18 holes recorded
+                                </Text>
+                              </View>
                             </View>
-                            <TextInput
-                              ref={(ref) => {
-                                inputRefs.current[`player:${scoreEntryPlayer.id}:${hole.number}`] = ref;
-                              }}
-                              value={scoreDisplayValue(scoreEntryPlayer.scores[hole.number])}
-                              onChangeText={(value) =>
-                                handleScoreInputChange(
-                                  scoreEntryPlayer.id,
-                                  hole.number,
-                                  value,
-                                  playerEntryKeys,
-                                  `player:${scoreEntryPlayer.id}:${hole.number}`,
-                                )
-                              }
-                              keyboardType="number-pad"
-                              placeholder="Score"
-                              placeholderTextColor="#8a877f"
-                              maxLength={2}
-                              blurOnSubmit={false}
-                              style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
-                            />
-                            <Pressable
-                              onPress={() =>
-                                toggleBlobScore(
-                                  scoreEntryPlayer.id,
-                                  hole.number,
-                                  playerEntryKeys,
-                                  `player:${scoreEntryPlayer.id}:${hole.number}`,
-                                )
-                              }
-                              style={[styles.blobButton, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonActive]}
-                            >
-                              <Text style={[styles.blobButtonText, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
-                                Blob
-                              </Text>
-                            </Pressable>
-                            <Pressable onPress={() => setSelectedPlayerId(scoreEntryPlayer.id)} style={styles.pointsBox}>
-                              <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
-                              <Text style={styles.badgeLabel}>pts</Text>
-                            </Pressable>
-                          </View>
-                        ))}
+                          ) : null}
+                        </View>
                       </View>
                     ) : (
                       <View style={styles.card}>
@@ -2065,6 +2466,7 @@ export default function App() {
           <Text style={styles.noteText}>Saved courses are also written to local device storage so they can be reused in later rounds on the same device.</Text>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
       <Modal
         visible={!!selectedPlayer}
         transparent
@@ -2164,6 +2566,9 @@ const styles = StyleSheet.create({
   secondaryText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
   smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12 },
   smallButtonText: { color: colors.green2, fontWeight: "700", fontSize: 12 },
+  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#e5dcc7" },
+  suggestionRowLast: { borderBottomWidth: 0, paddingBottom: 0 },
+  suggestionCopy: { flex: 1, gap: 2 },
   chipRow: { gap: 8, paddingRight: 8 },
   chip: { backgroundColor: "#e6dfcf", borderRadius: 16, paddingVertical: 10, paddingHorizontal: 14 },
   chipActive: { backgroundColor: colors.green },
@@ -2195,6 +2600,24 @@ const styles = StyleSheet.create({
   holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e6dfcf", alignItems: "center", justifyContent: "center" },
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   scoreInfo: { flex: 1, gap: 2 },
+  playerEntryCard: { overflow: "hidden" },
+  playerEntryBody: { position: "relative", height: 500 },
+  playerEntryList: { flex: 1 },
+  playerEntryListContent: { paddingBottom: 128 },
+  entryTotalsBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "row",
+    gap: 10,
+    paddingTop: 14,
+    backgroundColor: colors.panel,
+    borderTopWidth: 1,
+    borderTopColor: "#e5dcc7",
+  },
+  entryTotalCard: { flex: 1, backgroundColor: "#edf2eb", borderRadius: 18, padding: 12, gap: 4 },
+  entryTotalValue: { color: colors.green2, fontSize: 28, lineHeight: 32, fontWeight: "700" },
   playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
   playerEntryInfo: { flex: 1, gap: 2 },
   scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
