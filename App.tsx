@@ -1,7 +1,10 @@
 import { StatusBar } from "expo-status-bar";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -57,6 +60,7 @@ type RoundState = {
   name: string;
   date: string;
   courseName: string;
+  scorecardImageUri?: string | null;
   tees: TeeSet[];
   groups: Group[];
   players: Player[];
@@ -66,6 +70,7 @@ type SavedRound = RoundState & { savedAt: string };
 type SavedCourse = {
   id: string;
   name: string;
+  scorecardImageUri?: string | null;
   tees: TeeSet[];
   savedAt: string;
 };
@@ -103,6 +108,9 @@ const defaultCourse: Hole[] = [
 
 const STORAGE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}rollup-rounds.json`
+  : null;
+const SCORECARD_DIRECTORY_URI = FileSystem.documentDirectory
+  ? `${FileSystem.documentDirectory}scorecards`
   : null;
 const DEFAULT_COURSE_NAME = "Default Course";
 
@@ -353,6 +361,7 @@ function syncGhosts(players: Player[], groups: Group[], current: Record<string, 
 function cloneRound(round: RoundState): RoundState {
   return {
     ...round,
+    scorecardImageUri: round.scorecardImageUri ?? null,
     tees: cloneTees(round.tees),
     groups: round.groups.map((group) => ({ ...group })),
     players: round.players.map((player) => ({ ...player, scores: { ...player.scores } })),
@@ -370,8 +379,45 @@ function cloneTees(tees: TeeSet[]): TeeSet[] {
 function cloneSavedCourse(course: SavedCourse): SavedCourse {
   return {
     ...course,
+    scorecardImageUri: course.scorecardImageUri ?? null,
     tees: cloneTees(course.tees),
   };
+}
+
+function scorecardFileExtension(uri?: string | null, fileName?: string | null) {
+  const value = fileName || uri || "";
+  const normalized = value.toLowerCase();
+
+  if (normalized.endsWith(".png")) {
+    return ".png";
+  }
+  if (normalized.endsWith(".heic")) {
+    return ".heic";
+  }
+  if (normalized.endsWith(".heif")) {
+    return ".heif";
+  }
+  if (normalized.endsWith(".webp")) {
+    return ".webp";
+  }
+
+  return ".jpg";
+}
+
+async function persistScorecardAsset(asset: ImagePicker.ImagePickerAsset) {
+  if (!SCORECARD_DIRECTORY_URI) {
+    return asset.uri;
+  }
+
+  const directoryInfo = await FileSystem.getInfoAsync(SCORECARD_DIRECTORY_URI);
+  if (!directoryInfo.exists) {
+    await FileSystem.makeDirectoryAsync(SCORECARD_DIRECTORY_URI, { intermediates: true });
+  }
+
+  const extension = scorecardFileExtension(asset.uri, asset.fileName);
+  const destination = `${SCORECARD_DIRECTORY_URI}/${id("scorecard")}${extension}`;
+  await FileSystem.copyAsync({ from: asset.uri, to: destination });
+  return destination;
 }
 
 function normalizeCourse(holes?: Hole[], fallbackYardages?: number[]) {
@@ -422,6 +468,7 @@ function normalizeSavedCourse(course: SavedCourse): SavedCourse {
   return {
     id: course.id || id("course"),
     name: course.name?.trim() || DEFAULT_COURSE_NAME,
+    scorecardImageUri: course.scorecardImageUri ?? null,
     tees: normalizeTees(course.tees),
     savedAt: course.savedAt || new Date().toISOString(),
   };
@@ -446,6 +493,7 @@ function normalizeRound(round: RoundState): RoundState {
     name: round.name || "Rollup Round",
     date: round.date || today(),
     courseName: round.courseName?.trim() || DEFAULT_COURSE_NAME,
+    scorecardImageUri: round.scorecardImageUri ?? null,
     tees,
     groups: groups.map((group) => ({ ...group })),
     players,
@@ -645,6 +693,8 @@ export default function App() {
   const [selectedTeeId, setSelectedTeeId] = useState("white");
   const [courseSetupExpanded, setCourseSetupExpanded] = useState(false);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [scorecardPreviewUri, setScorecardPreviewUri] = useState<string | null>(null);
+  const [scorecardAction, setScorecardAction] = useState<"camera" | "library" | null>(null);
   const [scoreEntryMode, setScoreEntryMode] = useState<ScoreEntryMode>("group");
   const [scoreEntryPlayerId, setScoreEntryPlayerId] = useState<string | null>(null);
   const [groupEntryHoleByGroup, setGroupEntryHoleByGroup] = useState<Record<string, number>>({});
@@ -933,11 +983,76 @@ export default function App() {
     }
   };
 
+  const attachScorecardAsset = async (asset: ImagePicker.ImagePickerAsset) => {
+    const persistedUri = await persistScorecardAsset(asset);
+    setRound((current) => ({
+      ...current,
+      scorecardImageUri: persistedUri,
+    }));
+  };
+
+  const importScorecardFromLibrary = async () => {
+    setScorecardAction("library");
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Photos permission needed", "Allow photo access so you can attach a scorecard image.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 1,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        await attachScorecardAsset(result.assets[0]);
+      }
+    } catch {
+      Alert.alert("Could not open photos", "The scorecard photo picker did not open correctly. Please try again.");
+    } finally {
+      setScorecardAction(null);
+    }
+  };
+
+  const captureScorecardWithCamera = async () => {
+    setScorecardAction("camera");
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Camera permission needed", "Allow camera access so you can capture a scorecard photo.");
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 1,
+        cameraType: ImagePicker.CameraType.back,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        await attachScorecardAsset(result.assets[0]);
+      }
+    } catch {
+      Alert.alert("Could not open camera", "The scorecard camera did not open correctly. Please try again.");
+    } finally {
+      setScorecardAction(null);
+    }
+  };
+
+  const clearCurrentScorecard = () => {
+    setRound((current) => ({
+      ...current,
+      scorecardImageUri: null,
+    }));
+  };
+
   const saveCurrentCourseToLibrary = () => {
     setSavedCourses((current) => [
       {
         id: id("course"),
         name: round.courseName.trim() || DEFAULT_COURSE_NAME,
+        scorecardImageUri: round.scorecardImageUri ?? null,
         tees: cloneTees(round.tees),
         savedAt: new Date().toISOString(),
       },
@@ -950,6 +1065,7 @@ export default function App() {
       normalizeRound({
         ...current,
         courseName: savedCourse.name,
+        scorecardImageUri: savedCourse.scorecardImageUri ?? null,
         tees: cloneTees(savedCourse.tees),
       }),
     );
@@ -1419,6 +1535,7 @@ export default function App() {
                       setRound((current) => ({
                         ...current,
                         courseName: DEFAULT_COURSE_NAME,
+                        scorecardImageUri: null,
                         tees: defaultTees(),
                       }))
                     }
@@ -1562,6 +1679,59 @@ export default function App() {
 
             <View style={styles.card}>
               <View style={styles.rowBetween}>
+                <Text style={styles.cardTitle}>Scorecard scan</Text>
+                <Text style={styles.meta}>{round.scorecardImageUri ? "Photo attached" : "No photo yet"}</Text>
+              </View>
+              <Text style={styles.sectionSubtitle}>
+                Capture or attach a scorecard photo to this course so Version 2 can build scan-assisted import on top of it.
+              </Text>
+              {round.scorecardImageUri ? (
+                <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.scorecardPreviewCard}>
+                  <Image source={{ uri: round.scorecardImageUri }} style={styles.scorecardPreviewImage} resizeMode="cover" />
+                  <View style={styles.scorecardPreviewBody}>
+                    <Text style={styles.itemTitle}>Current scorecard photo</Text>
+                    <Text style={styles.meta}>
+                      Attached to this course setup and saved with the course or round when you store it locally.
+                    </Text>
+                  </View>
+                </Pressable>
+              ) : (
+                <View style={styles.infoBox}>
+                  <Text style={styles.infoText}>
+                    No scorecard photo is attached yet. Add one from the camera or your photo library to start the scan workflow.
+                  </Text>
+                </View>
+              )}
+              <View style={styles.buttonRow}>
+                <Pressable
+                  onPress={captureScorecardWithCamera}
+                  disabled={!!scorecardAction}
+                  style={[styles.primaryButton, scorecardAction && styles.buttonDisabled]}
+                >
+                  <Text style={styles.primaryText}>{scorecardAction === "camera" ? "Opening camera..." : "Scan with camera"}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={importScorecardFromLibrary}
+                  disabled={!!scorecardAction}
+                  style={[styles.secondaryButton, scorecardAction && styles.buttonDisabled]}
+                >
+                  <Text style={styles.secondaryText}>{scorecardAction === "library" ? "Opening photos..." : "Choose photo"}</Text>
+                </Pressable>
+              </View>
+              {round.scorecardImageUri ? (
+                <View style={styles.buttonRow}>
+                  <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.secondaryButton}>
+                    <Text style={styles.secondaryText}>View scorecard</Text>
+                  </Pressable>
+                  <Pressable onPress={clearCurrentScorecard} style={styles.secondaryButton}>
+                    <Text style={styles.secondaryText}>Remove photo</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.rowBetween}>
                 <Text style={styles.cardTitle}>Course library</Text>
                 <Text style={styles.meta}>{savedCourses.length} saved</Text>
               </View>
@@ -1582,6 +1752,18 @@ export default function App() {
                         {savedCourse.tees.length} tees • Par {totalPar} • Saved {formatDate(savedCourse.savedAt)}
                       </Text>
                       <Text style={styles.itemText}>{teeSummary}</Text>
+                      {savedCourse.scorecardImageUri ? (
+                        <Pressable
+                          onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)}
+                          style={styles.scorecardThumbRow}
+                        >
+                          <Image source={{ uri: savedCourse.scorecardImageUri }} style={styles.scorecardThumb} resizeMode="cover" />
+                          <View style={styles.scorecardThumbCopy}>
+                            <Text style={styles.smallLabel}>Scorecard photo</Text>
+                            <Text style={styles.meta}>Saved with this course and ready for scan-assisted setup.</Text>
+                          </View>
+                        </Pressable>
+                      ) : null}
                       <View style={styles.buttonRow}>
                         <Pressable onPress={() => loadSavedCourse(savedCourse)} style={styles.primaryButton}>
                           <Text style={styles.primaryText}>Load course</Text>
@@ -1593,6 +1775,11 @@ export default function App() {
                           <Text style={styles.secondaryText}>Delete</Text>
                         </Pressable>
                       </View>
+                      {savedCourse.scorecardImageUri ? (
+                        <Pressable onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)} style={styles.smallButton}>
+                          <Text style={styles.smallButtonText}>View scorecard</Text>
+                        </Pressable>
+                      ) : null}
                     </View>
                   );
                 })
@@ -2442,6 +2629,15 @@ export default function App() {
                     <Text style={styles.itemText}>{saved.players.length} players across {saved.groups.length} groups</Text>
                     <Text style={styles.itemText}>{topPlayer ? `Top player: ${topPlayer.name} on ${topPlayer.total} points` : "No player summary available"}</Text>
                     <Text style={styles.itemText}>{groupTotals[0] ? `Top group: ${groupTotals[0].name} on ${groupTotals[0].total} points` : "No group summary available"}</Text>
+                    {saved.scorecardImageUri ? (
+                      <Pressable onPress={() => setScorecardPreviewUri(saved.scorecardImageUri ?? null)} style={styles.scorecardThumbRow}>
+                        <Image source={{ uri: saved.scorecardImageUri }} style={styles.scorecardThumb} resizeMode="cover" />
+                        <View style={styles.scorecardThumbCopy}>
+                          <Text style={styles.smallLabel}>Scorecard photo</Text>
+                          <Text style={styles.meta}>This round includes a saved scorecard image.</Text>
+                        </View>
+                      </Pressable>
+                    ) : null}
                     <View style={styles.buttonRow}>
                       <Pressable onPress={() => { setRound(normalizeRound(saved)); setSelectedHole(1); setTab("live"); }} style={styles.primaryButton}>
                         <Text style={styles.primaryText}>Load round</Text>
@@ -2450,6 +2646,11 @@ export default function App() {
                         <Text style={styles.secondaryText}>Delete</Text>
                       </Pressable>
                     </View>
+                    {saved.scorecardImageUri ? (
+                      <Pressable onPress={() => setScorecardPreviewUri(saved.scorecardImageUri ?? null)} style={styles.smallButton}>
+                        <Text style={styles.smallButtonText}>View scorecard</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 );
               })
@@ -2464,6 +2665,7 @@ export default function App() {
           <Text style={styles.noteText}>In mixed fields, the shared ghost player stays with every 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
           <Text style={styles.noteText}>Saved courses are also written to local device storage so they can be reused in later rounds on the same device.</Text>
+          <Text style={styles.noteText}>Scorecard photos are also stored locally so they can support later scan-assisted setup work.</Text>
         </View>
       </ScrollView>
       </KeyboardAvoidingView>
@@ -2528,6 +2730,33 @@ export default function App() {
           </View>
         </View>
       </Modal>
+      <Modal
+        visible={!!scorecardPreviewUri}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setScorecardPreviewUri(null)}
+      >
+        <View style={styles.modalScrim}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setScorecardPreviewUri(null)} />
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleWrap}>
+                <Text style={styles.smallLabel}>Scorecard scan</Text>
+                <Text style={styles.modalTitle}>Scorecard photo</Text>
+                <Text style={styles.meta}>Use this stored photo as the starting point for scan-assisted course setup.</Text>
+              </View>
+              <Pressable onPress={() => setScorecardPreviewUri(null)} style={styles.modalCloseButton}>
+                <Text style={styles.secondaryText}>Close</Text>
+              </Pressable>
+            </View>
+            {scorecardPreviewUri ? (
+              <View style={styles.scorecardModalFrame}>
+                <Image source={{ uri: scorecardPreviewUri }} style={styles.scorecardModalImage} resizeMode="contain" />
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2562,6 +2791,7 @@ const styles = StyleSheet.create({
   buttonRow: { flexDirection: "row", gap: 12 },
   primaryButton: { flex: 1, backgroundColor: colors.green, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
   secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
+  buttonDisabled: { opacity: 0.65 },
   primaryText: { color: "#ffffff", fontWeight: "700", fontSize: 14 },
   secondaryText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
   smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12 },
@@ -2581,6 +2811,12 @@ const styles = StyleSheet.create({
   courseMetaInputWrap: { flex: 1, gap: 6 },
   courseInputWrap: { width: 72, gap: 6 },
   courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
+  scorecardPreviewCard: { overflow: "hidden", borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: "#ffffff" },
+  scorecardPreviewImage: { width: "100%", height: 180, backgroundColor: "#ece6d7" },
+  scorecardPreviewBody: { padding: 14, gap: 4 },
+  scorecardThumbRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#ffffff", borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12 },
+  scorecardThumb: { width: 72, height: 96, borderRadius: 12, backgroundColor: "#ece6d7" },
+  scorecardThumbCopy: { flex: 1, gap: 4 },
   cardTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
   smallLabel: { color: colors.green2, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.1 },
   summaryCard: { backgroundColor: colors.sand, borderRadius: 20, padding: 16, gap: 4 },
@@ -2645,6 +2881,8 @@ const styles = StyleSheet.create({
   modalCloseButton: { backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14 },
   modalScroll: { flexGrow: 0 },
   modalScrollContent: { gap: 10, paddingBottom: 4 },
+  scorecardModalFrame: { backgroundColor: "#ffffff", borderRadius: 18, padding: 12, minHeight: 380, justifyContent: "center" },
+  scorecardModalImage: { width: "100%", height: 420, borderRadius: 12, backgroundColor: "#ece6d7" },
   modalHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.pale, borderRadius: 18, padding: 12 },
   modalHoleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
   modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#edf2eb", alignItems: "center", justifyContent: "center" },

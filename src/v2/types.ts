@@ -60,6 +60,7 @@ export type V2RoundRecord = {
   courseId?: string | null;
   courseName: string;
   courseSnapshotTees: V2TeeSet[];
+  scorecardImageUri?: string | null;
   players: V2RoundPlayer[];
   savedAt: string;
 };

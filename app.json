@@ -13,6 +13,16 @@
     "assetBundlePatterns": [
       "**/*"
     ],
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Fairway to access your photos so you can attach scorecard images.",
+          "cameraPermission": "Allow Fairway to use your camera so you can scan a scorecard image.",
+          "microphonePermission": false
+        }
+      ]
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.podavies.fairway",

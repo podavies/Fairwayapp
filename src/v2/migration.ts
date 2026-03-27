@@ -35,6 +35,7 @@ type LegacyPlayer = {
 type LegacySavedCourse = {
   id: string;
   name: string;
+  scorecardImageUri?: string | null;
   tees: LegacyTeeSet[];
   savedAt: string;
 };
@@ -44,6 +45,7 @@ type LegacySavedRound = {
   name: string;
   date: string;
   courseName: string;
+  scorecardImageUri?: string | null;
   tees: LegacyTeeSet[];
   players: LegacyPlayer[];
   savedAt?: string;
@@ -94,6 +96,7 @@ function mapSavedCourse(course: LegacySavedCourse): V2CourseRecord {
     source: "migration",
     savedAt: course.savedAt,
     tees: course.tees.map(mapTee),
+    scorecardImageUri: course.scorecardImageUri ?? null,
   };
 }
 
@@ -117,6 +120,7 @@ function mapSavedRound(round: LegacySavedRound): V2RoundRecord {
     courseId: null,
     courseName: round.courseName,
     courseSnapshotTees: round.tees.map(mapTee),
+    scorecardImageUri: round.scorecardImageUri ?? null,
     players: round.players.map(mapRoundPlayer),
     savedAt: round.savedAt ?? new Date().toISOString(),
   };
