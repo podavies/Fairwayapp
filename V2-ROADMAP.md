@@ -61,6 +61,10 @@ Version 2 should also introduce a true shared scorecard flow so multiple players
 - [ ] Make the scan/review flow capture course rating and slope rating alongside hole data.
 - [ ] Review and confirm calculated handicaps before saving the round.
 - [ ] Test mixed tee setups, manual overrides, and round reloads to make sure the same player gets the same result after reopen.
+- [ ] Add post-round leaderboard sharing for WhatsApp so the group leaderboard and individual leaderboard can be sent straight from the app.
+- [ ] Support a clean share format that works for players in the competition and for the wider rollup chat after the round.
+- [ ] Let the user choose whether to share group results, individual results, or both together.
+- [ ] Make the shared result readable as plain text and as a styled share card/screenshot so it still looks good inside WhatsApp.
 
 ## Suggested data model changes
 

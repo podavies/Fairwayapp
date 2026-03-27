@@ -26,7 +26,18 @@ export type ScorecardHoleSuggestions = {
 
 type NumericLine = {
   index: number;
+  text: string;
   values: number[];
+};
+
+type MatchedNumericWindow = {
+  values: number[];
+  offset: number;
+};
+
+type HoleSequenceMatch = {
+  holeNumbers: number[];
+  offset: number;
 };
 
 function uniqueValues(values: string[]) {
@@ -44,18 +55,35 @@ function extractIntegers(source: string) {
 }
 
 function contiguousHoleSequence(values: number[]) {
+  return matchHoleSequence(values)?.holeNumbers ?? null;
+}
+
+function matchHoleSequence(values: number[]): HoleSequenceMatch | null {
   if (values.length < 9) {
     return null;
   }
 
-  const firstNine = values.slice(0, 9);
-  if (firstNine.every((value, index) => value === firstNine[0] + index) && (firstNine[0] === 1 || firstNine[0] === 10)) {
-    return firstNine;
+  for (let start = 0; start <= values.length - 18; start += 1) {
+    const fullCard = values.slice(start, start + 18);
+    if (fullCard.every((value, index) => value === index + 1)) {
+      return {
+        holeNumbers: fullCard,
+        offset: start,
+      };
+    }
   }
 
-  const firstEighteen = values.slice(0, 18);
-  if (firstEighteen.length === 18 && firstEighteen.every((value, index) => value === index + 1)) {
-    return firstEighteen;
+  for (let start = 0; start <= values.length - 9; start += 1) {
+    const nineHoleBlock = values.slice(start, start + 9);
+    if (
+      nineHoleBlock.every((value, index) => value === nineHoleBlock[0] + index) &&
+      (nineHoleBlock[0] === 1 || nineHoleBlock[0] === 10)
+    ) {
+      return {
+        holeNumbers: nineHoleBlock,
+        offset: start,
+      };
+    }
   }
 
   return null;
@@ -79,17 +107,69 @@ function isYardageRow(values: number[], holeCount: number) {
   return slice.length >= holeCount && slice.every((value) => value >= 50 && value <= 700);
 }
 
+function hasParLabel(source: string) {
+  return /\bpar\b/i.test(source);
+}
+
+function hasYardageLabel(source: string) {
+  return /\b(?:yds?|yards?|metres?|meters?)\b/i.test(source);
+}
+
+function hasStrokeIndexLabel(source: string) {
+  return /\b(?:s\.?\s*i\.?|stroke\s*index|index|hcp)\b/i.test(source);
+}
+
+function findMatchingWindow(values: number[], holeCount: number, matcher: (window: number[]) => boolean): MatchedNumericWindow | null {
+  if (values.length < holeCount) {
+    return null;
+  }
+
+  for (let start = 0; start <= values.length - holeCount; start += 1) {
+    const window = values.slice(start, start + holeCount);
+    if (matcher(window)) {
+      return {
+        values: window,
+        offset: start,
+      };
+    }
+  }
+
+  return null;
+}
+
 function pickNearbyLine(
   numericLines: NumericLine[],
   usedLines: Set<number>,
   sourceIndex: number,
+  holeCount: number,
   matcher: (values: number[]) => boolean,
+  labelMatcher?: (source: string) => boolean,
 ) {
   const nearby = numericLines
     .filter((line) => !usedLines.has(line.index) && line.index !== sourceIndex && Math.abs(line.index - sourceIndex) <= 4)
-    .sort((a, b) => Math.abs(a.index - sourceIndex) - Math.abs(b.index - sourceIndex));
+    .map((line) => {
+      const windowMatch = findMatchingWindow(line.values, holeCount, matcher);
+      if (!windowMatch) {
+        return null;
+      }
 
-  return nearby.find((line) => matcher(line.values)) ?? null;
+      return {
+        index: line.index,
+        text: line.text,
+        values: windowMatch.values,
+        offset: windowMatch.offset,
+        distance: Math.abs(line.index - sourceIndex),
+        hasLabel: labelMatcher ? labelMatcher(line.text) : false,
+      };
+    })
+    .filter((line): line is NumericLine & {
+      offset: number;
+      distance: number;
+      hasLabel: boolean;
+    } => line !== null)
+    .sort((a, b) => Number(b.hasLabel) - Number(a.hasLabel) || a.distance - b.distance || a.offset - b.offset);
+
+  return nearby[0] ?? null;
 }
 
 export function extractScorecardNameSuggestions(result: ScorecardOcrResult | null): ScorecardNameSuggestions {
@@ -101,11 +181,11 @@ export function extractScorecardNameSuggestions(result: ScorecardOcrResult | nul
   }
 
   const knownTeeWords = ["white", "yellow", "blue", "red", "green", "black", "orange", "purple", "silver", "gold", "bronze"];
+  const ignoredTeeNames = /^(?:hole|holes|yd|yds|yard|yards|par|stroke|stroke index|index|s\.?\s*i\.?|si|out|in|total)$/i;
   const lines = result.lines
     .map((line) => normalizeCandidate(line.text))
     .filter(Boolean);
-  const numericLines = lines.map((line) => extractIntegers(line));
-  const firstHoleRowIndex = numericLines.findIndex((values) => contiguousHoleSequence(values));
+  const firstHoleRowIndex = lines.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
   const preTableLines = lines.slice(0, firstHoleRowIndex >= 0 ? firstHoleRowIndex : Math.min(lines.length, 6));
 
   const courseNameCandidates = preTableLines
@@ -115,7 +195,7 @@ export function extractScorecardNameSuggestions(result: ScorecardOcrResult | nul
       return (
         /[a-z]/i.test(line) &&
         digitCount <= 1 &&
-        !/(course\s*rating|c\/?r|cr|slope|par|stroke|index|yard|holes?|out|in|total)/i.test(lower)
+        !/\b(?:course\s*rating|c\/?r|cr|slope|par|stroke|index|yard|yards?|holes?|out|in|total)\b/i.test(lower)
       );
     })
     .map((line) => normalizeCandidate(line))
@@ -140,7 +220,7 @@ export function extractScorecardNameSuggestions(result: ScorecardOcrResult | nul
 
       return matches;
     })
-    .filter((line) => line.length >= 3);
+    .filter((line) => line.length >= 3 && !ignoredTeeNames.test(line));
 
   return {
     courseNameCandidates: uniqueValues(courseNameCandidates),
@@ -178,6 +258,22 @@ export function extractScorecardOcrHints(result: ScorecardOcrResult | null): Sco
         slopeRatingCandidates.push(value);
       }
     }
+
+    const pairedMatches = source.matchAll(/(\d{2}\.\d)\s*(?:\/|\||-|\s)\s*(\d{2,3})/g);
+    for (const match of pairedMatches) {
+      const ratingValue = match[1];
+      const slopeValue = match[2];
+      const rating = Number.parseFloat(ratingValue);
+      const slope = Number.parseInt(slopeValue, 10);
+
+      if (!Number.isNaN(rating) && rating >= 55 && rating <= 80) {
+        courseRatingCandidates.push(ratingValue);
+      }
+
+      if (!Number.isNaN(slope) && slope >= 55 && slope <= 155) {
+        slopeRatingCandidates.push(slopeValue);
+      }
+    }
   });
 
   return {
@@ -197,22 +293,43 @@ export function extractScorecardHoleSuggestions(result: ScorecardOcrResult | nul
   }
 
   const numericLines = result.lines
-    .map((line, index) => ({ index, values: extractIntegers(line.text) }))
+    .map((line, index) => ({ index, text: line.text, values: extractIntegers(line.text) }))
     .filter((line) => line.values.length >= 3);
 
   const holeRows = numericLines
-    .map((line) => ({ ...line, holeNumbers: contiguousHoleSequence(line.values) }))
-    .filter((line): line is NumericLine & { holeNumbers: number[] } => Array.isArray(line.holeNumbers));
+    .map((line) => ({ ...line, holeSequence: matchHoleSequence(line.values) }))
+    .filter((line): line is NumericLine & { holeSequence: HoleSequenceMatch } => line.holeSequence !== null);
 
   const usedLines = new Set<number>();
   const holeMap = new Map<number, ScorecardParsedHole>();
 
   holeRows.forEach((holeRow) => {
-    const holeNumbers = holeRow.holeNumbers;
+    const holeNumbers = holeRow.holeSequence.holeNumbers;
     const holeCount = holeNumbers.length;
-    const yardageLine = pickNearbyLine(numericLines, usedLines, holeRow.index, (values) => isYardageRow(values, holeCount));
-    const parLine = pickNearbyLine(numericLines, usedLines, holeRow.index, (values) => isParRow(values, holeCount));
-    const strokeIndexLine = pickNearbyLine(numericLines, usedLines, holeRow.index, (values) => isStrokeIndexRow(values, holeCount));
+    const yardageLine = pickNearbyLine(
+      numericLines,
+      usedLines,
+      holeRow.index,
+      holeCount,
+      (values) => isYardageRow(values, holeCount),
+      hasYardageLabel,
+    );
+    const parLine = pickNearbyLine(
+      numericLines,
+      usedLines,
+      holeRow.index,
+      holeCount,
+      (values) => isParRow(values, holeCount),
+      hasParLabel,
+    );
+    const strokeIndexLine = pickNearbyLine(
+      numericLines,
+      usedLines,
+      holeRow.index,
+      holeCount,
+      (values) => isStrokeIndexRow(values, holeCount),
+      hasStrokeIndexLabel,
+    );
 
     if (yardageLine) {
       usedLines.add(yardageLine.index);
