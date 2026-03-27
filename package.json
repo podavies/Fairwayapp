@@ -1,6 +1,6 @@
 {
   "name": "fairway-mobile",
-  "version": "1.5.2",
+  "version": "2.0.0",
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test:totals": "node --test .\\tests\\score-entry-totals.test.mjs",
+    "test:ocr": "node --test .\\tests\\scorecard-ocr.test.mjs",
     "test:iphone": "powershell -ExecutionPolicy Bypass -File .\\scripts\\start-iphone-test.ps1",
     "build:ios": "npx eas-cli build --platform ios --profile production",
     "submit:ios": "npx eas-cli submit --platform ios --profile production",

@@ -48,6 +48,20 @@ Version 2 should also introduce a true shared scorecard flow so multiple players
 - Preserve saved courses separately from saved rounds.
 - Keep imported course data reusable across future competitions.
 
+## Planned milestone markers
+
+### 2.5.0 - Proper handicaps
+
+- [ ] Define the handicap model as `Handicap Index in, Course Handicap out, Playing Handicap out`.
+- [ ] Convert from the selected tee using tee-specific course rating and slope rating.
+- [ ] Store the tee context on each player and round so handicap output stays stable for the whole round.
+- [ ] Keep a manual override for society rules, casual formats, and other edge cases.
+- [ ] Show both the raw Handicap Index and the derived handicap output in setup and live scoring.
+- [ ] Keep legacy direct handicap entry as a fallback until the new flow is proven.
+- [ ] Make the scan/review flow capture course rating and slope rating alongside hole data.
+- [ ] Review and confirm calculated handicaps before saving the round.
+- [ ] Test mixed tee setups, manual overrides, and round reloads to make sure the same player gets the same result after reopen.
+
 ## Suggested data model changes
 
 - Split `Course`, `TeeSet`, and `Round` into separate concepts.

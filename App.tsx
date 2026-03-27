@@ -31,6 +31,19 @@ import {
   teeForPlayer as calculateTeeForPlayer,
   totalPoints as calculateTotalPoints,
 } from "./src/scoring";
+import {
+  extractScorecardHoleSuggestions,
+  extractScorecardNameSuggestions,
+  extractScorecardOcrHints,
+  getScorecardOcrSupportMessage,
+  recognizeScorecardTextAsync,
+} from "./src/scorecardOcr";
+import type {
+  ScorecardHoleSuggestions,
+  ScorecardNameSuggestions,
+  ScorecardOcrHints,
+} from "./src/scorecardOcr";
+import type { ScorecardOcrResult } from "./modules";
 
 type Hole = {
   number: number;
@@ -83,7 +96,22 @@ type SavedPlayerProfile = {
 };
 type Tab = "setup" | "live" | "saved";
 type ScoreEntryMode = "group" | "player";
+type ScorecardOcrStatus = "idle" | "running" | "done" | "error";
+type ScorecardReviewHoleDraft = {
+  number: number;
+  yardage: string;
+  par: string;
+  strokeIndex: string;
+};
+type ScorecardReviewDraft = {
+  courseName: string;
+  teeName: string;
+  courseRating: string;
+  slopeRating: string;
+  holes: ScorecardReviewHoleDraft[];
+};
 type LiveSection = "groups" | "players" | "entry";
+type SetupSection = "scorecard" | "courseLibrary" | "groups" | "field";
 
 const defaultCourse: Hole[] = [
   { number: 1, name: "Home Wood", yardage: 279, par: 4, strokeIndex: 12 },
@@ -115,16 +143,28 @@ const SCORECARD_DIRECTORY_URI = FileSystem.documentDirectory
 const DEFAULT_COURSE_NAME = "Default Course";
 
 const colors = {
-  bg: "#f3efe4",
-  panel: "#fffdf7",
-  green: "#143726",
-  green2: "#2d5a3d",
-  sand: "#dcc99a",
-  pale: "#f4efdf",
-  soft: "#ece4d1",
-  ink: "#1c231d",
-  muted: "#6d6b64",
-  border: "#ddd1b8",
+  bg: "#e3e7eb",
+  panel: "#ffffff",
+  field: "#ffffff",
+  hero: "#0e1116",
+  primary: "#515a66",
+  primaryStrong: "#1f2630",
+  primarySoft: "#cfd7df",
+  pale: "#edf1f5",
+  soft: "#dbe1e8",
+  chip: "#d2d8e0",
+  scoreBox: "#c8d1da",
+  preview: "#d1d8e0",
+  ink: "#090c10",
+  muted: "#4f5863",
+  border: "#c2cad3",
+  line: "#d7dde5",
+  heroText: "#ffffff",
+  heroMuted: "#e1e5ea",
+  heroSubtle: "#aeb6c0",
+  placeholder: "#878f9b",
+  note: "#404750",
+  overlay: "rgba(3,5,8,0.72)",
 };
 
 const teeDefinitions = [
@@ -439,6 +479,30 @@ function normalizeCourse(holes?: Hole[], fallbackYardages?: number[]) {
   });
 }
 
+function buildScorecardReviewDraft(
+  courseName: string,
+  selectedTee: TeeSet,
+  nameSuggestions: ScorecardNameSuggestions,
+  ocrHints: ScorecardOcrHints,
+  holeSuggestions: ScorecardHoleSuggestions,
+): ScorecardReviewDraft {
+  return {
+    courseName: nameSuggestions.courseNameCandidates[0] ?? courseName,
+    teeName: nameSuggestions.teeNameCandidates[0] ?? selectedTee.name,
+    courseRating: ocrHints.courseRatingCandidates[0] ?? String(selectedTee.courseRating),
+    slopeRating: ocrHints.slopeRatingCandidates[0] ?? String(selectedTee.slopeRating),
+    holes: selectedTee.course.map((currentHole) => {
+      const suggestion = holeSuggestions.holes.find((hole) => hole.number === currentHole.number);
+      return {
+        number: currentHole.number,
+        yardage: String(suggestion?.yardage ?? currentHole.yardage),
+        par: String(suggestion?.par ?? currentHole.par),
+        strokeIndex: String(suggestion?.strokeIndex ?? currentHole.strokeIndex),
+      };
+    }),
+  };
+}
+
 function defaultTees(baseCourse?: Hole[]) {
   return teeDefinitions.map((tee) => ({
     ...tee,
@@ -692,9 +756,21 @@ export default function App() {
   const [draftTeeId, setDraftTeeId] = useState("white");
   const [selectedTeeId, setSelectedTeeId] = useState("white");
   const [courseSetupExpanded, setCourseSetupExpanded] = useState(false);
+  const [setupExpanded, setSetupExpanded] = useState<Record<SetupSection, boolean>>({
+    scorecard: false,
+    courseLibrary: false,
+    groups: false,
+    field: false,
+  });
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [scorecardPreviewUri, setScorecardPreviewUri] = useState<string | null>(null);
   const [scorecardAction, setScorecardAction] = useState<"camera" | "library" | null>(null);
+  const [scorecardOcrStatus, setScorecardOcrStatus] = useState<ScorecardOcrStatus>("idle");
+  const [scorecardOcrResult, setScorecardOcrResult] = useState<ScorecardOcrResult | null>(null);
+  const [scorecardOcrError, setScorecardOcrError] = useState<string | null>(null);
+  const [scorecardOcrImageUri, setScorecardOcrImageUri] = useState<string | null>(null);
+  const [scorecardReviewVisible, setScorecardReviewVisible] = useState(false);
+  const [scorecardReviewDraft, setScorecardReviewDraft] = useState<ScorecardReviewDraft | null>(null);
   const [scoreEntryMode, setScoreEntryMode] = useState<ScoreEntryMode>("group");
   const [scoreEntryPlayerId, setScoreEntryPlayerId] = useState<string | null>(null);
   const [groupEntryHoleByGroup, setGroupEntryHoleByGroup] = useState<Record<string, number>>({});
@@ -958,6 +1034,12 @@ export default function App() {
       };
     });
   };
+  const toggleSetupSection = (section: SetupSection) => {
+    setSetupExpanded((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  };
   const rememberPlayerProfile = (player: Pick<Player, "name" | "handicap" | "teeId">) => {
     setSavedPlayerProfiles((current) => mergePlayerProfiles(current, [player]));
   };
@@ -983,12 +1065,85 @@ export default function App() {
     }
   };
 
+  const runScorecardOcr = async (imageUri: string) => {
+    setScorecardOcrImageUri(imageUri);
+    setScorecardOcrStatus("running");
+    setScorecardOcrResult(null);
+    setScorecardOcrError(null);
+
+    try {
+      const result = await recognizeScorecardTextAsync(imageUri);
+      setScorecardOcrResult(result);
+      setScorecardOcrStatus("done");
+    } catch (error) {
+      setScorecardOcrResult(null);
+      setScorecardOcrStatus("error");
+      setScorecardOcrError(error instanceof Error ? error.message : "Could not read text from the scorecard photo.");
+    }
+  };
+
+  const openScorecardReview = () => {
+    setScorecardReviewDraft(
+      buildScorecardReviewDraft(
+        round.courseName,
+        selectedTee,
+        scorecardNameSuggestions,
+        scorecardOcrHints,
+        scorecardHoleSuggestions,
+      ),
+    );
+    setScorecardReviewVisible(true);
+  };
+
+  const applyScorecardReview = () => {
+    if (!scorecardReviewDraft) {
+      return;
+    }
+
+    setRound((current) => ({
+      ...current,
+      courseName: scorecardReviewDraft.courseName.slice(0, 40) || current.courseName,
+      tees: current.tees.map((tee) =>
+        tee.id === selectedTeeId
+          ? {
+              ...tee,
+              name: scorecardReviewDraft.teeName.slice(0, 18) || tee.name,
+              courseRating: Number.parseFloat(scorecardReviewDraft.courseRating.replace(/[^0-9.]/g, "")) || tee.courseRating,
+              slopeRating: Math.min(
+                155,
+                Math.max(55, Number.parseInt(scorecardReviewDraft.slopeRating.replace(/[^0-9]/g, ""), 10) || tee.slopeRating),
+              ),
+              course: tee.course.map((currentHole) => {
+                const reviewHole = scorecardReviewDraft.holes.find((hole) => hole.number === currentHole.number);
+                return reviewHole
+                  ? {
+                      ...currentHole,
+                      yardage: Math.max(1, Number.parseInt(reviewHole.yardage.replace(/[^0-9]/g, ""), 10) || currentHole.yardage),
+                      par: Math.min(6, Math.max(3, Number.parseInt(reviewHole.par.replace(/[^0-9]/g, ""), 10) || currentHole.par)),
+                      strokeIndex: Math.min(
+                        18,
+                        Math.max(1, Number.parseInt(reviewHole.strokeIndex.replace(/[^0-9]/g, ""), 10) || currentHole.strokeIndex),
+                      ),
+                    }
+                  : currentHole;
+              }),
+            }
+          : tee,
+      ),
+    }));
+
+    setCourseSetupExpanded(true);
+    setScorecardReviewVisible(false);
+    Alert.alert("OCR review applied", `Applied the reviewed scorecard values to ${selectedTee.name}.`);
+  };
+
   const attachScorecardAsset = async (asset: ImagePicker.ImagePickerAsset) => {
     const persistedUri = await persistScorecardAsset(asset);
     setRound((current) => ({
       ...current,
       scorecardImageUri: persistedUri,
     }));
+    await runScorecardOcr(persistedUri);
   };
 
   const importScorecardFromLibrary = async () => {
@@ -1041,6 +1196,12 @@ export default function App() {
   };
 
   const clearCurrentScorecard = () => {
+    setScorecardReviewVisible(false);
+    setScorecardReviewDraft(null);
+    setScorecardOcrImageUri(null);
+    setScorecardOcrStatus("idle");
+    setScorecardOcrResult(null);
+    setScorecardOcrError(null);
     setRound((current) => ({
       ...current,
       scorecardImageUri: null,
@@ -1078,6 +1239,46 @@ export default function App() {
     const size = round.players.filter((player) => player.groupId === group.id).length;
     return size !== 3 && size !== 4;
   });
+  const scorecardOcrSupportMessage = getScorecardOcrSupportMessage();
+  const activeScorecardOcr = round.scorecardImageUri && scorecardOcrImageUri === round.scorecardImageUri;
+  const visibleScorecardOcrStatus = activeScorecardOcr ? scorecardOcrStatus : "idle";
+  const visibleScorecardOcrResult = activeScorecardOcr ? scorecardOcrResult : null;
+  const visibleScorecardOcrError = activeScorecardOcr ? scorecardOcrError : null;
+  const scorecardNameSuggestions = useMemo(
+    () => extractScorecardNameSuggestions(visibleScorecardOcrResult),
+    [visibleScorecardOcrResult],
+  );
+  const scorecardOcrHints = useMemo(() => extractScorecardOcrHints(visibleScorecardOcrResult), [visibleScorecardOcrResult]);
+  const scorecardHoleSuggestions = useMemo(
+    () => extractScorecardHoleSuggestions(visibleScorecardOcrResult),
+    [visibleScorecardOcrResult],
+  );
+  const scorecardSummary = !round.scorecardImageUri
+    ? "No photo attached yet."
+    : visibleScorecardOcrStatus === "running"
+      ? "1 photo attached. Reading text now."
+      : visibleScorecardOcrResult
+        ? scorecardHoleSuggestions.holes.length > 0
+          ? `1 photo attached. OCR mapped ${scorecardHoleSuggestions.holes.length} hole${scorecardHoleSuggestions.holes.length === 1 ? "" : "s"}.`
+          : `1 photo attached. OCR read ${visibleScorecardOcrResult.lines.length} lines.`
+        : visibleScorecardOcrError
+          ? `1 photo attached. ${visibleScorecardOcrError}`
+          : scorecardOcrSupportMessage
+            ? `1 photo attached. ${scorecardOcrSupportMessage}`
+            : "1 photo attached. Ready to run OCR.";
+  const courseLibrarySummary =
+    savedCourses.length === 0
+      ? "No saved courses yet."
+      : `${savedCourses.length} saved course${savedCourses.length === 1 ? "" : "s"} ready to reuse.`;
+  const groupsSummary =
+    invalidGroups.length === 0
+      ? `${round.groups.length} group${round.groups.length === 1 ? "" : "s"} - all valid.`
+      : `${round.groups.length} group${round.groups.length === 1 ? "" : "s"} - ${invalidGroups.length} need attention.`;
+  const activeGroupCount = new Set(round.players.map((player) => player.groupId)).size;
+  const fieldSummary =
+    round.players.length === 0
+      ? "No players added yet."
+      : `${round.players.length} player${round.players.length === 1 ? "" : "s"} across ${activeGroupCount} group${activeGroupCount === 1 ? "" : "s"}.`;
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
@@ -1401,14 +1602,14 @@ export default function App() {
                 value={round.name}
                 onChangeText={(value) => setRound((current) => ({ ...current, name: value }))}
                 placeholder="Round name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <TextInput
                 value={round.date}
                 onChangeText={(value) => setRound((current) => ({ ...current, date: value }))}
                 placeholder="YYYY-MM-DD"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <View style={styles.buttonRow}>
@@ -1441,7 +1642,7 @@ export default function App() {
                 value={round.courseName}
                 onChangeText={(value) => setRound((current) => ({ ...current, courseName: value.slice(0, 40) }))}
                 placeholder="Course name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <Text style={styles.sectionSubtitle}>
@@ -1474,7 +1675,7 @@ export default function App() {
                     }))
                   }
                   placeholder="Tee name"
-                  placeholderTextColor="#8a877f"
+                  placeholderTextColor={colors.placeholder}
                   style={styles.input}
                 />
                 <View style={styles.courseMetaRow}>
@@ -1497,7 +1698,7 @@ export default function App() {
                       }
                       keyboardType="decimal-pad"
                       placeholder="70.0"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.courseInput}
                     />
                   </View>
@@ -1520,7 +1721,7 @@ export default function App() {
                       }
                       keyboardType="number-pad"
                       placeholder="120"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.courseInput}
                     />
                   </View>
@@ -1575,7 +1776,7 @@ export default function App() {
                             }))
                           }
                           placeholder="Hole name"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseNameInput}
                         />
                       </View>
@@ -1605,7 +1806,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="350"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1635,7 +1836,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="4"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1665,7 +1866,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="1"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1679,164 +1880,379 @@ export default function App() {
 
             <View style={styles.card}>
               <View style={styles.rowBetween}>
-                <Text style={styles.cardTitle}>Scorecard scan</Text>
-                <Text style={styles.meta}>{round.scorecardImageUri ? "Photo attached" : "No photo yet"}</Text>
+                <View style={styles.cardHeaderCopy}>
+                  <Text style={styles.cardTitle}>Scorecard photo</Text>
+                  <Text style={styles.meta}>{scorecardSummary}</Text>
+                </View>
+                <View style={styles.cardHeaderActions}>
+                  <Pressable onPress={() => toggleSetupSection("scorecard")} style={styles.smallButton}>
+                    <Text style={styles.smallButtonText}>{setupExpanded.scorecard ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
               </View>
-              <Text style={styles.sectionSubtitle}>
-                Capture or attach a scorecard photo to this course so Version 2 can build scan-assisted import on top of it.
-              </Text>
-              {round.scorecardImageUri ? (
-                <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.scorecardPreviewCard}>
-                  <Image source={{ uri: round.scorecardImageUri }} style={styles.scorecardPreviewImage} resizeMode="cover" />
-                  <View style={styles.scorecardPreviewBody}>
-                    <Text style={styles.itemTitle}>Current scorecard photo</Text>
-                    <Text style={styles.meta}>
-                      Attached to this course setup and saved with the course or round when you store it locally.
-                    </Text>
-                  </View>
-                </Pressable>
-              ) : (
-                <View style={styles.infoBox}>
-                  <Text style={styles.infoText}>
-                    No scorecard photo is attached yet. Add one from the camera or your photo library to start the scan workflow.
+              {setupExpanded.scorecard ? (
+                <>
+                  <Text style={styles.sectionSubtitle}>
+                    Attach a scorecard photo to this course and the app will try to read the text on iPhone builds using on-device OCR.
                   </Text>
-                </View>
-              )}
-              <View style={styles.buttonRow}>
-                <Pressable
-                  onPress={captureScorecardWithCamera}
-                  disabled={!!scorecardAction}
-                  style={[styles.primaryButton, scorecardAction && styles.buttonDisabled]}
-                >
-                  <Text style={styles.primaryText}>{scorecardAction === "camera" ? "Opening camera..." : "Scan with camera"}</Text>
-                </Pressable>
-                <Pressable
-                  onPress={importScorecardFromLibrary}
-                  disabled={!!scorecardAction}
-                  style={[styles.secondaryButton, scorecardAction && styles.buttonDisabled]}
-                >
-                  <Text style={styles.secondaryText}>{scorecardAction === "library" ? "Opening photos..." : "Choose photo"}</Text>
-                </Pressable>
-              </View>
-              {round.scorecardImageUri ? (
-                <View style={styles.buttonRow}>
-                  <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.secondaryButton}>
-                    <Text style={styles.secondaryText}>View scorecard</Text>
-                  </Pressable>
-                  <Pressable onPress={clearCurrentScorecard} style={styles.secondaryButton}>
-                    <Text style={styles.secondaryText}>Remove photo</Text>
-                  </Pressable>
-                </View>
+                  {round.scorecardImageUri ? (
+                    <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.scorecardPreviewCard}>
+                      <Image source={{ uri: round.scorecardImageUri }} style={styles.scorecardPreviewImage} resizeMode="cover" />
+                      <View style={styles.scorecardPreviewBody}>
+                        <Text style={styles.itemTitle}>Current scorecard photo</Text>
+                        <Text style={styles.meta}>
+                          Attached to this course setup, saved locally, and ready for OCR review.
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.infoBox}>
+                      <Text style={styles.infoText}>
+                        No scorecard photo is attached yet. Add one from the camera or your photo library so we can use it for OCR import.
+                      </Text>
+                    </View>
+                  )}
+                  <View style={styles.buttonRow}>
+                    <Pressable
+                      onPress={captureScorecardWithCamera}
+                      disabled={!!scorecardAction}
+                      style={[styles.primaryButton, scorecardAction && styles.buttonDisabled]}
+                    >
+                      <Text style={styles.primaryText}>{scorecardAction === "camera" ? "Opening camera..." : "Take photo"}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={importScorecardFromLibrary}
+                      disabled={!!scorecardAction}
+                      style={[styles.secondaryButton, scorecardAction && styles.buttonDisabled]}
+                    >
+                      <Text style={styles.secondaryText}>{scorecardAction === "library" ? "Opening photos..." : "Choose photo"}</Text>
+                    </Pressable>
+                  </View>
+                  {round.scorecardImageUri ? (
+                    <View style={styles.buttonRow}>
+                      <Pressable onPress={() => setScorecardPreviewUri(round.scorecardImageUri ?? null)} style={styles.secondaryButton}>
+                        <Text style={styles.secondaryText}>View scorecard</Text>
+                      </Pressable>
+                      <Pressable onPress={clearCurrentScorecard} style={styles.secondaryButton}>
+                        <Text style={styles.secondaryText}>Remove photo</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {round.scorecardImageUri ? (
+                    <View style={styles.subCard}>
+                      <View style={styles.rowBetween}>
+                        <View style={styles.cardHeaderCopy}>
+                          <Text style={styles.smallLabel}>OCR preview</Text>
+                          <Text style={styles.meta}>
+                            {visibleScorecardOcrStatus === "running"
+                              ? "Reading text from the attached scorecard now."
+                              : visibleScorecardOcrResult
+                                ? `${visibleScorecardOcrResult.lines.length} text line${visibleScorecardOcrResult.lines.length === 1 ? "" : "s"} detected. Review the OCR before trusting it.`
+                                : visibleScorecardOcrError
+                                  ? visibleScorecardOcrError
+                                  : scorecardOcrSupportMessage ?? "Run OCR on this scorecard photo."}
+                          </Text>
+                        </View>
+                        <View style={styles.cardHeaderActions}>
+                          {visibleScorecardOcrResult ? (
+                            <Pressable onPress={openScorecardReview} style={styles.smallButton}>
+                              <Text style={styles.smallButtonText}>Review card</Text>
+                            </Pressable>
+                          ) : null}
+                          <Pressable
+                            onPress={() => {
+                              if (round.scorecardImageUri) {
+                                void runScorecardOcr(round.scorecardImageUri);
+                              }
+                            }}
+                            disabled={visibleScorecardOcrStatus === "running"}
+                            style={[styles.smallButton, visibleScorecardOcrStatus === "running" && styles.buttonDisabled]}
+                          >
+                            <Text style={styles.smallButtonText}>
+                              {visibleScorecardOcrStatus === "running"
+                                ? "Reading..."
+                                : visibleScorecardOcrResult
+                                  ? "Run again"
+                                  : "Run OCR"}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                      {scorecardNameSuggestions.courseNameCandidates.length > 0 || scorecardNameSuggestions.teeNameCandidates.length > 0 ? (
+                        <View style={styles.ocrHintsWrap}>
+                          <Text style={styles.meta}>Detected names from the scorecard. Tap to apply now or adjust them in the review screen.</Text>
+                          {scorecardNameSuggestions.courseNameCandidates.length > 0 ? (
+                            <View style={styles.ocrHintGroup}>
+                              <Text style={styles.smallLabel}>Course name</Text>
+                              <View style={styles.ocrHintRow}>
+                                {scorecardNameSuggestions.courseNameCandidates.map((value) => (
+                                  <Pressable
+                                    key={`course-name-${value}`}
+                                    onPress={() => setRound((current) => ({ ...current, courseName: value.slice(0, 40) }))}
+                                    style={styles.ocrHintChip}
+                                  >
+                                    <Text style={styles.ocrHintText}>{value}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            </View>
+                          ) : null}
+                          {scorecardNameSuggestions.teeNameCandidates.length > 0 ? (
+                            <View style={styles.ocrHintGroup}>
+                              <Text style={styles.smallLabel}>Tee name</Text>
+                              <View style={styles.ocrHintRow}>
+                                {scorecardNameSuggestions.teeNameCandidates.map((value) => (
+                                  <Pressable
+                                    key={`tee-name-${value}`}
+                                    onPress={() =>
+                                      setRound((current) => ({
+                                        ...current,
+                                        tees: current.tees.map((tee) =>
+                                          tee.id === selectedTeeId ? { ...tee, name: value.slice(0, 18) } : tee,
+                                        ),
+                                      }))
+                                    }
+                                    style={styles.ocrHintChip}
+                                  >
+                                    <Text style={styles.ocrHintText}>{value}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            </View>
+                          ) : null}
+                        </View>
+                      ) : null}
+                      {scorecardOcrHints.courseRatingCandidates.length > 0 || scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                        <View style={styles.ocrHintsWrap}>
+                          <Text style={styles.meta}>Tap a detected value to apply it to the current tee: {selectedTee.name}.</Text>
+                          {scorecardOcrHints.courseRatingCandidates.length > 0 ? (
+                            <View style={styles.ocrHintGroup}>
+                              <Text style={styles.smallLabel}>Course rating</Text>
+                              <View style={styles.ocrHintRow}>
+                                {scorecardOcrHints.courseRatingCandidates.map((value) => (
+                                  <Pressable
+                                    key={`rating-${value}`}
+                                    onPress={() =>
+                                      setRound((current) => ({
+                                        ...current,
+                                        tees: current.tees.map((tee) =>
+                                          tee.id === selectedTeeId
+                                            ? { ...tee, courseRating: Number.parseFloat(value) || tee.courseRating }
+                                            : tee,
+                                        ),
+                                      }))
+                                    }
+                                    style={styles.ocrHintChip}
+                                  >
+                                    <Text style={styles.ocrHintText}>{value}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            </View>
+                          ) : null}
+                          {scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                            <View style={styles.ocrHintGroup}>
+                              <Text style={styles.smallLabel}>Slope</Text>
+                              <View style={styles.ocrHintRow}>
+                                {scorecardOcrHints.slopeRatingCandidates.map((value) => (
+                                  <Pressable
+                                    key={`slope-${value}`}
+                                    onPress={() =>
+                                      setRound((current) => ({
+                                        ...current,
+                                        tees: current.tees.map((tee) =>
+                                          tee.id === selectedTeeId
+                                            ? {
+                                                ...tee,
+                                                slopeRating: Math.min(155, Math.max(55, Number.parseInt(value, 10) || tee.slopeRating)),
+                                              }
+                                            : tee,
+                                        ),
+                                      }))
+                                    }
+                                    style={styles.ocrHintChip}
+                                  >
+                                    <Text style={styles.ocrHintText}>{value}</Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            </View>
+                          ) : null}
+                        </View>
+                      ) : null}
+                      {scorecardHoleSuggestions.holes.length > 0 ? (
+                        <View style={styles.ocrPreviewList}>
+                          <View style={styles.rowBetween}>
+                            <View style={styles.cardHeaderCopy}>
+                              <Text style={styles.smallLabel}>Hole suggestions</Text>
+                              <Text style={styles.meta}>
+                                {scorecardHoleSuggestions.holes.length} holes • {scorecardHoleSuggestions.yardageCount} yardages • {scorecardHoleSuggestions.parCount} pars • {scorecardHoleSuggestions.strokeIndexCount} stroke indexes
+                              </Text>
+                            </View>
+                            <View style={styles.cardHeaderActions}>
+                              <Pressable onPress={openScorecardReview} style={styles.smallButton}>
+                                <Text style={styles.smallButtonText}>Review full card</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                          {scorecardHoleSuggestions.holes.slice(0, 6).map((hole) => (
+                            <Text key={`hole-suggestion-${hole.number}`} style={styles.ocrPreviewLine}>
+                              Hole {hole.number} • {hole.yardage ?? "?"} yds • Par {hole.par ?? "?"} • SI {hole.strokeIndex ?? "?"}
+                            </Text>
+                          ))}
+                          {scorecardHoleSuggestions.holes.length > 6 ? (
+                            <Text style={styles.meta}>Showing the first 6 parsed holes for now.</Text>
+                          ) : null}
+                        </View>
+                      ) : visibleScorecardOcrResult ? (
+                        <Text style={styles.meta}>No structured hole rows found yet. Raw OCR text is shown below.</Text>
+                      ) : null}
+                      {visibleScorecardOcrResult ? (
+                        <View style={styles.ocrPreviewList}>
+                          {visibleScorecardOcrResult.lines.slice(0, 8).map((line, index) => (
+                            <Text key={`${line.text}-${index}`} style={styles.ocrPreviewLine}>
+                              {line.text}
+                            </Text>
+                          ))}
+                          {visibleScorecardOcrResult.lines.length > 8 ? (
+                            <Text style={styles.meta}>Showing the first 8 OCR lines for now.</Text>
+                          ) : null}
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </>
               ) : null}
             </View>
 
             <View style={styles.card}>
               <View style={styles.rowBetween}>
-                <Text style={styles.cardTitle}>Course library</Text>
-                <Text style={styles.meta}>{savedCourses.length} saved</Text>
+                <View style={styles.cardHeaderCopy}>
+                  <Text style={styles.cardTitle}>Course library</Text>
+                  <Text style={styles.meta}>{courseLibrarySummary}</Text>
+                </View>
+                <View style={styles.cardHeaderActions}>
+                  <Pressable onPress={() => toggleSetupSection("courseLibrary")} style={styles.smallButton}>
+                    <Text style={styles.smallButtonText}>{setupExpanded.courseLibrary ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
               </View>
-              <Text style={styles.sectionSubtitle}>Reuse a saved course instead of typing all 18 holes again.</Text>
-              {savedCourses.length === 0 ? (
-                <Text style={styles.meta}>No saved courses yet. Edit the course above, then tap `Save course to library`.</Text>
-              ) : (
-                savedCourses.map((savedCourse) => {
-                  const teeSummary = savedCourse.tees
-                    .map((tee) => tee.name.trim() || "Unnamed tee")
-                    .join(" • ");
-                  const firstTee = savedCourse.tees[0];
-                  const totalPar = firstTee?.course.reduce((sum, hole) => sum + hole.par, 0) ?? 0;
-                  return (
-                    <View key={savedCourse.id} style={styles.subCard}>
-                      <Text style={styles.itemTitle}>{savedCourse.name}</Text>
-                      <Text style={styles.meta}>
-                        {savedCourse.tees.length} tees • Par {totalPar} • Saved {formatDate(savedCourse.savedAt)}
-                      </Text>
-                      <Text style={styles.itemText}>{teeSummary}</Text>
-                      {savedCourse.scorecardImageUri ? (
-                        <Pressable
-                          onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)}
-                          style={styles.scorecardThumbRow}
-                        >
-                          <Image source={{ uri: savedCourse.scorecardImageUri }} style={styles.scorecardThumb} resizeMode="cover" />
-                          <View style={styles.scorecardThumbCopy}>
-                            <Text style={styles.smallLabel}>Scorecard photo</Text>
-                            <Text style={styles.meta}>Saved with this course and ready for scan-assisted setup.</Text>
+              {setupExpanded.courseLibrary ? (
+                <>
+                  <Text style={styles.sectionSubtitle}>Reuse a saved course instead of typing all 18 holes again.</Text>
+                  {savedCourses.length === 0 ? (
+                    <Text style={styles.meta}>No saved courses yet. Edit the course above, then tap `Save course to library`.</Text>
+                  ) : (
+                    savedCourses.map((savedCourse) => {
+                      const teeSummary = savedCourse.tees
+                        .map((tee) => tee.name.trim() || "Unnamed tee")
+                        .join(" • ");
+                      const firstTee = savedCourse.tees[0];
+                      const totalPar = firstTee?.course.reduce((sum, hole) => sum + hole.par, 0) ?? 0;
+                      return (
+                        <View key={savedCourse.id} style={styles.subCard}>
+                          <Text style={styles.itemTitle}>{savedCourse.name}</Text>
+                          <Text style={styles.meta}>
+                            {savedCourse.tees.length} tees • Par {totalPar} • Saved {formatDate(savedCourse.savedAt)}
+                          </Text>
+                          <Text style={styles.itemText}>{teeSummary}</Text>
+                          {savedCourse.scorecardImageUri ? (
+                            <Pressable
+                              onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)}
+                              style={styles.scorecardThumbRow}
+                            >
+                              <Image source={{ uri: savedCourse.scorecardImageUri }} style={styles.scorecardThumb} resizeMode="cover" />
+                              <View style={styles.scorecardThumbCopy}>
+                                <Text style={styles.smallLabel}>Scorecard photo</Text>
+                                <Text style={styles.meta}>Saved with this course and ready for future OCR-assisted setup.</Text>
+                              </View>
+                            </Pressable>
+                          ) : null}
+                          <View style={styles.buttonRow}>
+                            <Pressable onPress={() => loadSavedCourse(savedCourse)} style={styles.primaryButton}>
+                              <Text style={styles.primaryText}>Load course</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => setSavedCourses((current) => current.filter((item) => item.id !== savedCourse.id))}
+                              style={styles.secondaryButton}
+                            >
+                              <Text style={styles.secondaryText}>Delete</Text>
+                            </Pressable>
                           </View>
-                        </Pressable>
-                      ) : null}
-                      <View style={styles.buttonRow}>
-                        <Pressable onPress={() => loadSavedCourse(savedCourse)} style={styles.primaryButton}>
-                          <Text style={styles.primaryText}>Load course</Text>
-                        </Pressable>
+                          {savedCourse.scorecardImageUri ? (
+                            <Pressable onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)} style={styles.smallButton}>
+                              <Text style={styles.smallButtonText}>View scorecard</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      );
+                    })
+                  )}
+                </>
+              ) : null}
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.rowBetween}>
+                <View style={styles.cardHeaderCopy}>
+                  <Text style={styles.cardTitle}>Groups</Text>
+                  <Text style={styles.meta}>{groupsSummary}</Text>
+                </View>
+                <View style={styles.cardHeaderActions}>
+                  <Pressable
+                    onPress={() =>
+                      setRoster((current) => ({
+                        ...current,
+                        groups: [...current.groups, { id: id("group"), name: `Group ${current.groups.length + 1}` }],
+                      }))
+                    }
+                    style={styles.smallButton}
+                  >
+                    <Text style={styles.smallButtonText}>Add group</Text>
+                  </Pressable>
+                  <Pressable onPress={() => toggleSetupSection("groups")} style={styles.smallButton}>
+                    <Text style={styles.smallButtonText}>{setupExpanded.groups ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+              {setupExpanded.groups ? (
+                round.groups.map((group) => {
+                  const size = round.players.filter((player) => player.groupId === group.id).length;
+                  const removable = size === 0 && round.groups.length > 1;
+                  return (
+                    <View key={group.id} style={styles.subCard}>
+                      <TextInput
+                        value={group.name}
+                        onChangeText={(value) =>
+                          setRoster((current) => ({
+                            ...current,
+                            groups: current.groups.map((currentGroup) =>
+                              currentGroup.id === group.id ? { ...currentGroup, name: value.slice(0, 24) } : currentGroup,
+                            ),
+                          }))
+                        }
+                        placeholder="Group name"
+                        placeholderTextColor={colors.placeholder}
+                        style={styles.input}
+                      />
+                      <Text style={styles.meta}>{groupLabel(size)} • {groupNote(size)}</Text>
+                      {removable ? (
                         <Pressable
-                          onPress={() => setSavedCourses((current) => current.filter((item) => item.id !== savedCourse.id))}
-                          style={styles.secondaryButton}
+                          onPress={() =>
+                            setRoster((current) => ({
+                              ...current,
+                              groups: current.groups.filter((currentGroup) => currentGroup.id !== group.id),
+                            }))
+                          }
+                          style={styles.smallButton}
                         >
-                          <Text style={styles.secondaryText}>Delete</Text>
-                        </Pressable>
-                      </View>
-                      {savedCourse.scorecardImageUri ? (
-                        <Pressable onPress={() => setScorecardPreviewUri(savedCourse.scorecardImageUri ?? null)} style={styles.smallButton}>
-                          <Text style={styles.smallButtonText}>View scorecard</Text>
+                          <Text style={styles.smallButtonText}>Remove empty group</Text>
                         </Pressable>
                       ) : null}
                     </View>
                   );
                 })
-              )}
-            </View>
-
-            <View style={styles.card}>
-              <View style={styles.rowBetween}>
-                <Text style={styles.cardTitle}>Groups</Text>
-                <Pressable
-                  onPress={() =>
-                    setRoster((current) => ({
-                      ...current,
-                      groups: [...current.groups, { id: id("group"), name: `Group ${current.groups.length + 1}` }],
-                    }))
-                  }
-                  style={styles.smallButton}
-                >
-                  <Text style={styles.smallButtonText}>Add group</Text>
-                </Pressable>
-              </View>
-              {round.groups.map((group) => {
-                const size = round.players.filter((player) => player.groupId === group.id).length;
-                const removable = size === 0 && round.groups.length > 1;
-                return (
-                  <View key={group.id} style={styles.subCard}>
-                    <TextInput
-                      value={group.name}
-                      onChangeText={(value) =>
-                        setRoster((current) => ({
-                          ...current,
-                          groups: current.groups.map((currentGroup) =>
-                            currentGroup.id === group.id ? { ...currentGroup, name: value.slice(0, 24) } : currentGroup,
-                          ),
-                        }))
-                      }
-                      placeholder="Group name"
-                      placeholderTextColor="#8a877f"
-                      style={styles.input}
-                    />
-                    <Text style={styles.meta}>{groupLabel(size)} • {groupNote(size)}</Text>
-                    {removable ? (
-                      <Pressable
-                        onPress={() =>
-                          setRoster((current) => ({
-                            ...current,
-                            groups: current.groups.filter((currentGroup) => currentGroup.id !== group.id),
-                          }))
-                        }
-                        style={styles.smallButton}
-                      >
-                        <Text style={styles.smallButtonText}>Remove empty group</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                );
-              })}
+              ) : null}
             </View>
 
             <View style={styles.card}>
@@ -1845,7 +2261,7 @@ export default function App() {
                 value={draftName}
                 onChangeText={handleDraftNameChange}
                 placeholder="Player name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               {draftPlayerSuggestions.length > 0 ? (
@@ -1877,7 +2293,7 @@ export default function App() {
                 onChangeText={(value) => setDraftHandicap(value.replace(/[^0-9]/g, "").slice(0, 2))}
                 keyboardType="number-pad"
                 placeholder="Handicap"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -1943,128 +2359,140 @@ export default function App() {
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Field</Text>
-              {round.players.length === 0 ? (
-                <Text style={styles.meta}>Add players above to build the field.</Text>
-              ) : (
-                round.players.map((player) => (
-                  <View key={player.id} style={styles.subCard}>
-                    <View style={styles.rowBetween}>
-                      <Text style={styles.smallLabel}>Player</Text>
-                      <Pressable
-                        onPress={() =>
+              <View style={styles.rowBetween}>
+                <View style={styles.cardHeaderCopy}>
+                  <Text style={styles.cardTitle}>Field</Text>
+                  <Text style={styles.meta}>{fieldSummary}</Text>
+                </View>
+                <View style={styles.cardHeaderActions}>
+                  <Pressable onPress={() => toggleSetupSection("field")} style={styles.smallButton}>
+                    <Text style={styles.smallButtonText}>{setupExpanded.field ? "Hide" : "Show"}</Text>
+                  </Pressable>
+                </View>
+              </View>
+              {setupExpanded.field ? (
+                round.players.length === 0 ? (
+                  <Text style={styles.meta}>Add players above to build the field.</Text>
+                ) : (
+                  round.players.map((player) => (
+                    <View key={player.id} style={styles.subCard}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.smallLabel}>Player</Text>
+                        <Pressable
+                          onPress={() =>
+                            setRoster((current) => ({
+                              ...current,
+                              players: current.players.filter((currentPlayer) => currentPlayer.id !== player.id),
+                            }))
+                          }
+                          style={styles.smallButton}
+                        >
+                          <Text style={styles.smallButtonText}>Remove</Text>
+                        </Pressable>
+                      </View>
+                      <TextInput
+                        value={player.name}
+                        onChangeText={(value) =>
                           setRoster((current) => ({
                             ...current,
-                            players: current.players.filter((currentPlayer) => currentPlayer.id !== player.id),
+                            players: current.players.map((currentPlayer) =>
+                              currentPlayer.id === player.id ? { ...currentPlayer, name: value.slice(0, 24) } : currentPlayer,
+                            ),
                           }))
                         }
-                        style={styles.smallButton}
-                      >
-                        <Text style={styles.smallButtonText}>Remove</Text>
-                      </Pressable>
+                        onEndEditing={() => {
+                          const nextName = cleanPlayerName(player.name);
+                          setRoster((current) => ({
+                            ...current,
+                            players: current.players.map((currentPlayer) =>
+                              currentPlayer.id === player.id ? { ...currentPlayer, name: nextName } : currentPlayer,
+                            ),
+                          }));
+                          rememberPlayerProfile({
+                            name: nextName,
+                            handicap: player.handicap,
+                            teeId: player.teeId,
+                          });
+                        }}
+                        placeholder="Player name"
+                        placeholderTextColor={colors.placeholder}
+                        style={styles.input}
+                      />
+                      <TextInput
+                        value={String(player.handicap)}
+                        onChangeText={(value) =>
+                          setRoster((current) => ({
+                            ...current,
+                            players: current.players.map((currentPlayer) =>
+                              currentPlayer.id === player.id
+                                ? { ...currentPlayer, handicap: Number(value.replace(/[^0-9]/g, "").slice(0, 2) || "0") }
+                                : currentPlayer,
+                            ),
+                          }))
+                        }
+                        onEndEditing={() =>
+                          rememberPlayerProfile({
+                            name: player.name,
+                            handicap: player.handicap,
+                            teeId: player.teeId,
+                          })
+                        }
+                        keyboardType="number-pad"
+                        placeholder="Handicap"
+                        placeholderTextColor={colors.placeholder}
+                        style={styles.input}
+                      />
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                        {round.tees.map((tee) => {
+                          const active = player.teeId === tee.id;
+                          return (
+                            <Pressable
+                              key={tee.id}
+                              onPress={() => {
+                                setRoster((current) => ({
+                                  ...current,
+                                  players: current.players.map((currentPlayer) =>
+                                    currentPlayer.id === player.id ? { ...currentPlayer, teeId: tee.id } : currentPlayer,
+                                  ),
+                                }));
+                                rememberPlayerProfile({
+                                  name: player.name,
+                                  handicap: player.handicap,
+                                  teeId: tee.id,
+                                });
+                              }}
+                              style={[styles.chip, active && styles.chipActive]}
+                            >
+                              <Text style={[styles.chipText, active && styles.chipTextActive]}>{tee.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                        {round.groups.map((group) => {
+                          const active = player.groupId === group.id;
+                          return (
+                            <Pressable
+                              key={group.id}
+                              onPress={() =>
+                                setRoster((current) => ({
+                                  ...current,
+                                  players: current.players.map((currentPlayer) =>
+                                    currentPlayer.id === player.id ? { ...currentPlayer, groupId: group.id } : currentPlayer,
+                                  ),
+                                }))
+                              }
+                              style={[styles.chip, active && styles.chipActive]}
+                            >
+                              <Text style={[styles.chipText, active && styles.chipTextActive]}>{group.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
                     </View>
-                    <TextInput
-                      value={player.name}
-                      onChangeText={(value) =>
-                        setRoster((current) => ({
-                          ...current,
-                          players: current.players.map((currentPlayer) =>
-                            currentPlayer.id === player.id ? { ...currentPlayer, name: value.slice(0, 24) } : currentPlayer,
-                          ),
-                        }))
-                      }
-                      onEndEditing={() => {
-                        const nextName = cleanPlayerName(player.name);
-                        setRoster((current) => ({
-                          ...current,
-                          players: current.players.map((currentPlayer) =>
-                            currentPlayer.id === player.id ? { ...currentPlayer, name: nextName } : currentPlayer,
-                          ),
-                        }));
-                        rememberPlayerProfile({
-                          name: nextName,
-                          handicap: player.handicap,
-                          teeId: player.teeId,
-                        });
-                      }}
-                      placeholder="Player name"
-                      placeholderTextColor="#8a877f"
-                      style={styles.input}
-                    />
-                    <TextInput
-                      value={String(player.handicap)}
-                      onChangeText={(value) =>
-                        setRoster((current) => ({
-                          ...current,
-                          players: current.players.map((currentPlayer) =>
-                            currentPlayer.id === player.id
-                              ? { ...currentPlayer, handicap: Number(value.replace(/[^0-9]/g, "").slice(0, 2) || "0") }
-                              : currentPlayer,
-                          ),
-                        }))
-                      }
-                      onEndEditing={() =>
-                        rememberPlayerProfile({
-                          name: player.name,
-                          handicap: player.handicap,
-                          teeId: player.teeId,
-                        })
-                      }
-                      keyboardType="number-pad"
-                      placeholder="Handicap"
-                      placeholderTextColor="#8a877f"
-                      style={styles.input}
-                    />
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                      {round.tees.map((tee) => {
-                        const active = player.teeId === tee.id;
-                        return (
-                          <Pressable
-                            key={tee.id}
-                            onPress={() => {
-                              setRoster((current) => ({
-                                ...current,
-                                players: current.players.map((currentPlayer) =>
-                                  currentPlayer.id === player.id ? { ...currentPlayer, teeId: tee.id } : currentPlayer,
-                                ),
-                              }));
-                              rememberPlayerProfile({
-                                name: player.name,
-                                handicap: player.handicap,
-                                teeId: tee.id,
-                              });
-                            }}
-                            style={[styles.chip, active && styles.chipActive]}
-                          >
-                            <Text style={[styles.chipText, active && styles.chipTextActive]}>{tee.name}</Text>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                      {round.groups.map((group) => {
-                        const active = player.groupId === group.id;
-                        return (
-                          <Pressable
-                            key={group.id}
-                            onPress={() =>
-                              setRoster((current) => ({
-                                ...current,
-                                players: current.players.map((currentPlayer) =>
-                                  currentPlayer.id === player.id ? { ...currentPlayer, groupId: group.id } : currentPlayer,
-                                ),
-                              }))
-                            }
-                            style={[styles.chip, active && styles.chipActive]}
-                          >
-                            <Text style={[styles.chipText, active && styles.chipTextActive]}>{group.name}</Text>
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                ))
-              )}
+                  ))
+                )
+              ) : null}
             </View>
 
             <View style={styles.noteCard}>
@@ -2397,7 +2825,7 @@ export default function App() {
                               }
                               keyboardType="number-pad"
                               placeholder="Score"
-                              placeholderTextColor="#8a877f"
+                              placeholderTextColor={colors.placeholder}
                               maxLength={1}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
@@ -2508,7 +2936,7 @@ export default function App() {
                                     }
                                     keyboardType="number-pad"
                                     placeholder="Score"
-                                    placeholderTextColor="#8a877f"
+                                    placeholderTextColor={colors.placeholder}
                                     maxLength={1}
                                     blurOnSubmit={false}
                                     onFocus={() => {
@@ -2665,7 +3093,7 @@ export default function App() {
           <Text style={styles.noteText}>In mixed fields, the shared ghost player stays with every 3-ball for the whole round, never hole by hole.</Text>
           <Text style={styles.noteText}>Saved rounds are written to local device storage so they can be reopened later on the same device.</Text>
           <Text style={styles.noteText}>Saved courses are also written to local device storage so they can be reused in later rounds on the same device.</Text>
-          <Text style={styles.noteText}>Scorecard photos are also stored locally so they can support later scan-assisted setup work.</Text>
+      <Text style={styles.noteText}>Scorecard photos are also stored locally so they can support later OCR-assisted setup work.</Text>
         </View>
       </ScrollView>
       </KeyboardAvoidingView>
@@ -2731,6 +3159,248 @@ export default function App() {
         </View>
       </Modal>
       <Modal
+        visible={scorecardReviewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setScorecardReviewVisible(false)}
+      >
+        <View style={styles.modalScrim}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setScorecardReviewVisible(false)} />
+          <View style={styles.modalCard}>
+            {scorecardReviewDraft ? (
+              <>
+                <View style={styles.modalHeader}>
+                  <View style={styles.modalTitleWrap}>
+                    <Text style={styles.smallLabel}>OCR review</Text>
+                    <Text style={styles.modalTitle}>Review scorecard import</Text>
+                    <Text style={styles.meta}>Check the course, tee, ratings, and all 18 holes before applying OCR data to {selectedTee.name}.</Text>
+                  </View>
+                  <Pressable onPress={() => setScorecardReviewVisible(false)} style={styles.modalCloseButton}>
+                    <Text style={styles.secondaryText}>Close</Text>
+                  </Pressable>
+                </View>
+                <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+                  {scorecardNameSuggestions.courseNameCandidates.length > 0 ||
+                  scorecardNameSuggestions.teeNameCandidates.length > 0 ||
+                  scorecardOcrHints.courseRatingCandidates.length > 0 ||
+                  scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                    <View style={styles.subCard}>
+                      <Text style={styles.smallLabel}>Detected suggestions</Text>
+                      <Text style={styles.meta}>Tap any suggestion to drop it into the review fields.</Text>
+                      {scorecardNameSuggestions.courseNameCandidates.length > 0 ? (
+                        <View style={styles.ocrHintGroup}>
+                          <Text style={styles.smallLabel}>Course name</Text>
+                          <View style={styles.ocrHintRow}>
+                            {scorecardNameSuggestions.courseNameCandidates.map((value) => (
+                              <Pressable
+                                key={`review-course-name-${value}`}
+                                onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, courseName: value } : current))}
+                                style={styles.ocrHintChip}
+                              >
+                                <Text style={styles.ocrHintText}>{value}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                      {scorecardNameSuggestions.teeNameCandidates.length > 0 ? (
+                        <View style={styles.ocrHintGroup}>
+                          <Text style={styles.smallLabel}>Tee name</Text>
+                          <View style={styles.ocrHintRow}>
+                            {scorecardNameSuggestions.teeNameCandidates.map((value) => (
+                              <Pressable
+                                key={`review-tee-name-${value}`}
+                                onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, teeName: value } : current))}
+                                style={styles.ocrHintChip}
+                              >
+                                <Text style={styles.ocrHintText}>{value}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                      {scorecardOcrHints.courseRatingCandidates.length > 0 ? (
+                        <View style={styles.ocrHintGroup}>
+                          <Text style={styles.smallLabel}>Course rating</Text>
+                          <View style={styles.ocrHintRow}>
+                            {scorecardOcrHints.courseRatingCandidates.map((value) => (
+                              <Pressable
+                                key={`review-course-rating-${value}`}
+                                onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, courseRating: value } : current))}
+                                style={styles.ocrHintChip}
+                              >
+                                <Text style={styles.ocrHintText}>{value}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                      {scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                        <View style={styles.ocrHintGroup}>
+                          <Text style={styles.smallLabel}>Slope</Text>
+                          <View style={styles.ocrHintRow}>
+                            {scorecardOcrHints.slopeRatingCandidates.map((value) => (
+                              <Pressable
+                                key={`review-slope-${value}`}
+                                onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, slopeRating: value } : current))}
+                                style={styles.ocrHintChip}
+                              >
+                                <Text style={styles.ocrHintText}>{value}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  <View style={styles.subCard}>
+                    <Text style={styles.smallLabel}>Course setup</Text>
+                    <TextInput
+                      value={scorecardReviewDraft.courseName}
+                      onChangeText={(value) => setScorecardReviewDraft((current) => (current ? { ...current, courseName: value.slice(0, 40) } : current))}
+                      placeholder="Course name"
+                      placeholderTextColor={colors.placeholder}
+                      style={styles.input}
+                    />
+                    <View style={styles.reviewFieldRow}>
+                      <View style={styles.reviewField}>
+                        <Text style={styles.smallLabel}>Tee name</Text>
+                        <TextInput
+                          value={scorecardReviewDraft.teeName}
+                          onChangeText={(value) => setScorecardReviewDraft((current) => (current ? { ...current, teeName: value.slice(0, 18) } : current))}
+                          placeholder="Tee name"
+                          placeholderTextColor={colors.placeholder}
+                          style={styles.input}
+                        />
+                      </View>
+                    </View>
+                    <View style={styles.reviewFieldRow}>
+                      <View style={styles.reviewField}>
+                        <Text style={styles.smallLabel}>CR</Text>
+                        <TextInput
+                          value={scorecardReviewDraft.courseRating}
+                          onChangeText={(value) =>
+                            setScorecardReviewDraft((current) =>
+                              current ? { ...current, courseRating: value.replace(/[^0-9.]/g, "").slice(0, 4) } : current,
+                            )
+                          }
+                          keyboardType="decimal-pad"
+                          placeholder="70.0"
+                          placeholderTextColor={colors.placeholder}
+                          style={styles.courseInput}
+                        />
+                      </View>
+                      <View style={styles.reviewField}>
+                        <Text style={styles.smallLabel}>Slope</Text>
+                        <TextInput
+                          value={scorecardReviewDraft.slopeRating}
+                          onChangeText={(value) =>
+                            setScorecardReviewDraft((current) =>
+                              current ? { ...current, slopeRating: value.replace(/[^0-9]/g, "").slice(0, 3) } : current,
+                            )
+                          }
+                          keyboardType="number-pad"
+                          placeholder="120"
+                          placeholderTextColor={colors.placeholder}
+                          style={styles.courseInput}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.subCard}>
+                    <Text style={styles.smallLabel}>18-hole review</Text>
+                    <Text style={styles.meta}>Edit any OCR values that look wrong before applying them to the selected tee.</Text>
+                    {scorecardReviewDraft.holes.map((hole, index) => (
+                      <View key={`review-hole-${hole.number}`} style={styles.reviewHoleRow}>
+                        <View style={styles.modalHoleNumber}>
+                          <Text style={styles.modalHoleNumberText}>{hole.number}</Text>
+                        </View>
+                        <View style={styles.reviewHoleFields}>
+                          <View style={styles.reviewHoleInputWrap}>
+                            <Text style={styles.smallLabel}>Yds</Text>
+                            <TextInput
+                              value={hole.yardage}
+                              onChangeText={(value) =>
+                                setScorecardReviewDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        holes: current.holes.map((currentHole, holeIndex) =>
+                                          holeIndex === index ? { ...currentHole, yardage: value.replace(/[^0-9]/g, "").slice(0, 3) } : currentHole,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                              keyboardType="number-pad"
+                              placeholder="350"
+                              placeholderTextColor={colors.placeholder}
+                              style={styles.courseInput}
+                            />
+                          </View>
+                          <View style={styles.reviewHoleInputWrap}>
+                            <Text style={styles.smallLabel}>Par</Text>
+                            <TextInput
+                              value={hole.par}
+                              onChangeText={(value) =>
+                                setScorecardReviewDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        holes: current.holes.map((currentHole, holeIndex) =>
+                                          holeIndex === index ? { ...currentHole, par: value.replace(/[^0-9]/g, "").slice(0, 1) } : currentHole,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                              keyboardType="number-pad"
+                              placeholder="4"
+                              placeholderTextColor={colors.placeholder}
+                              style={styles.courseInput}
+                            />
+                          </View>
+                          <View style={styles.reviewHoleInputWrap}>
+                            <Text style={styles.smallLabel}>SI</Text>
+                            <TextInput
+                              value={hole.strokeIndex}
+                              onChangeText={(value) =>
+                                setScorecardReviewDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        holes: current.holes.map((currentHole, holeIndex) =>
+                                          holeIndex === index ? { ...currentHole, strokeIndex: value.replace(/[^0-9]/g, "").slice(0, 2) } : currentHole,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                              keyboardType="number-pad"
+                              placeholder="1"
+                              placeholderTextColor={colors.placeholder}
+                              style={styles.courseInput}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </ScrollView>
+                <View style={styles.buttonRow}>
+                  <Pressable onPress={() => setScorecardReviewVisible(false)} style={styles.secondaryButton}>
+                    <Text style={styles.secondaryText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable onPress={applyScorecardReview} style={styles.primaryButton}>
+                    <Text style={styles.primaryText}>Apply review</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+      <Modal
         visible={!!scorecardPreviewUri}
         transparent
         animationType="fade"
@@ -2741,9 +3411,9 @@ export default function App() {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <View style={styles.modalTitleWrap}>
-                <Text style={styles.smallLabel}>Scorecard scan</Text>
+                <Text style={styles.smallLabel}>Scorecard photo</Text>
                 <Text style={styles.modalTitle}>Scorecard photo</Text>
-                <Text style={styles.meta}>Use this stored photo as the starting point for scan-assisted course setup.</Text>
+                <Text style={styles.meta}>Use this stored photo as the starting point for future OCR-assisted course setup.</Text>
               </View>
               <Pressable onPress={() => setScorecardPreviewUri(null)} style={styles.modalCloseButton}>
                 <Text style={styles.secondaryText}>Close</Text>
@@ -2764,76 +3434,90 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 20, paddingBottom: 36, gap: 18 },
-  hero: { backgroundColor: colors.green, borderRadius: 28, padding: 24, gap: 16 },
-  kicker: { color: colors.sand, fontSize: 13, fontWeight: "700", letterSpacing: 1.8, textTransform: "uppercase" },
-  heroTitle: { color: "#fcfbf5", fontSize: 30, lineHeight: 36, fontWeight: "700" },
-  heroCopy: { color: "#d5e4d7", fontSize: 15, lineHeight: 22 },
+  hero: { backgroundColor: colors.hero, borderRadius: 28, padding: 24, gap: 16 },
+  kicker: { color: colors.heroSubtle, fontSize: 13, fontWeight: "700", letterSpacing: 1.8, textTransform: "uppercase" },
+  heroTitle: { color: colors.heroText, fontSize: 30, lineHeight: 36, fontWeight: "700" },
+  heroCopy: { color: colors.heroMuted, fontSize: 15, lineHeight: 22 },
   statRow: { flexDirection: "row", gap: 12 },
-  statCard: { flex: 1, backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 18, paddingVertical: 14, paddingHorizontal: 10 },
+  statCard: { flex: 1, backgroundColor: "rgba(255,255,255,0.14)", borderRadius: 18, paddingVertical: 14, paddingHorizontal: 10 },
   statValue: { color: "#ffffff", fontSize: 24, fontWeight: "700", textAlign: "center" },
-  statLabel: { color: "#ccdacd", fontSize: 12, textAlign: "center", marginTop: 4 },
+  statLabel: { color: colors.heroMuted, fontSize: 12, textAlign: "center", marginTop: 4 },
   tabRow: { flexDirection: "row", gap: 10 },
-  tabButton: { flex: 1, backgroundColor: "rgba(255,255,255,0.09)", borderRadius: 16, paddingVertical: 12, alignItems: "center" },
-  tabButtonActive: { backgroundColor: colors.sand },
-  tabText: { color: "#dce5dd", fontWeight: "700", fontSize: 14 },
-  tabTextActive: { color: colors.ink },
-  segmentButton: { flex: 1, backgroundColor: "#e8e0cd", borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: colors.border },
-  segmentButtonActive: { backgroundColor: colors.green, borderColor: colors.green },
-  segmentText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  tabButton: { flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 16, paddingVertical: 12, alignItems: "center" },
+  tabButtonActive: { backgroundColor: "#ffffff" },
+  tabText: { color: colors.heroMuted, fontWeight: "700", fontSize: 14 },
+  tabTextActive: { color: colors.hero },
+  segmentButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: colors.border },
+  segmentButtonActive: { backgroundColor: colors.primaryStrong, borderColor: colors.primaryStrong },
+  segmentText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
   segmentTextActive: { color: "#ffffff" },
   section: { gap: 3 },
   sectionTitle: { color: colors.ink, fontSize: 24, fontWeight: "700" },
   sectionSubtitle: { color: colors.muted, fontSize: 14 },
   card: { backgroundColor: colors.panel, borderRadius: 24, padding: 18, borderWidth: 1, borderColor: colors.border, gap: 12 },
   subCard: { backgroundColor: colors.pale, borderRadius: 18, padding: 14, gap: 10 },
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: "#ffffff", paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, color: colors.ink },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: colors.field, paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, color: colors.ink },
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  cardHeaderCopy: { flex: 1, gap: 4 },
+  cardHeaderActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 8 },
   buttonRow: { flexDirection: "row", gap: 12 },
-  primaryButton: { flex: 1, backgroundColor: colors.green, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
-  secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
+  primaryButton: { flex: 1, backgroundColor: colors.primaryStrong, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
+  secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center", borderWidth: 1, borderColor: colors.border },
   buttonDisabled: { opacity: 0.65 },
   primaryText: { color: "#ffffff", fontWeight: "700", fontSize: 14 },
-  secondaryText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
-  smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12 },
-  smallButtonText: { color: colors.green2, fontWeight: "700", fontSize: 12 },
-  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#e5dcc7" },
+  secondaryText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
+  smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.border },
+  smallButtonText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 12 },
+  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
   suggestionRowLast: { borderBottomWidth: 0, paddingBottom: 0 },
   suggestionCopy: { flex: 1, gap: 2 },
   chipRow: { gap: 8, paddingRight: 8 },
-  chip: { backgroundColor: "#e6dfcf", borderRadius: 16, paddingVertical: 10, paddingHorizontal: 14 },
-  chipActive: { backgroundColor: colors.green },
-  chipText: { color: colors.green2, fontWeight: "700", fontSize: 13 },
+  chip: { backgroundColor: colors.chip, borderRadius: 16, paddingVertical: 10, paddingHorizontal: 14 },
+  chipActive: { backgroundColor: colors.primaryStrong },
+  chipText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 13 },
   chipTextActive: { color: "#ffffff" },
-  courseRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  courseRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.line },
   courseLabelWrap: { flex: 1 },
-  courseNameInput: { marginTop: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
+  courseNameInput: { marginTop: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
   courseMetaRow: { flexDirection: "row", gap: 10 },
   courseMetaInputWrap: { flex: 1, gap: 6 },
   courseInputWrap: { width: 72, gap: 6 },
-  courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
-  scorecardPreviewCard: { overflow: "hidden", borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: "#ffffff" },
-  scorecardPreviewImage: { width: "100%", height: 180, backgroundColor: "#ece6d7" },
+  courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
+  scorecardPreviewCard: { overflow: "hidden", borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.field },
+  scorecardPreviewImage: { width: "100%", height: 180, backgroundColor: colors.preview },
   scorecardPreviewBody: { padding: 14, gap: 4 },
-  scorecardThumbRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#ffffff", borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12 },
-  scorecardThumb: { width: 72, height: 96, borderRadius: 12, backgroundColor: "#ece6d7" },
+  ocrHintsWrap: { gap: 10 },
+  ocrHintGroup: { gap: 6 },
+  ocrHintRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  ocrHintChip: { backgroundColor: colors.chip, borderRadius: 999, borderWidth: 1, borderColor: colors.border, paddingVertical: 6, paddingHorizontal: 10 },
+  ocrHintText: { color: colors.primaryStrong, fontSize: 12, fontWeight: "700" },
+  ocrPreviewList: { gap: 8 },
+  ocrPreviewLine: { color: colors.ink, fontSize: 13, lineHeight: 18 },
+  reviewFieldRow: { flexDirection: "row", gap: 10 },
+  reviewField: { flex: 1, gap: 6 },
+  reviewHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.line },
+  reviewHoleFields: { flex: 1, flexDirection: "row", gap: 8 },
+  reviewHoleInputWrap: { flex: 1, gap: 6 },
+  scorecardThumbRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.field, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12 },
+  scorecardThumb: { width: 72, height: 96, borderRadius: 12, backgroundColor: colors.preview },
   scorecardThumbCopy: { flex: 1, gap: 4 },
   cardTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
-  smallLabel: { color: colors.green2, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.1 },
-  summaryCard: { backgroundColor: colors.sand, borderRadius: 20, padding: 16, gap: 4 },
+  smallLabel: { color: colors.primaryStrong, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.1 },
+  summaryCard: { backgroundColor: colors.scoreBox, borderRadius: 20, padding: 16, gap: 4 },
   summaryTitle: { color: colors.ink, fontSize: 24, fontWeight: "700" },
   meta: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   rankRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12, paddingBottom: 10 },
   rankLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  rankNumber: { width: 34, height: 34, borderRadius: 17, textAlign: "center", textAlignVertical: "center", backgroundColor: "#edf2eb", color: colors.green2, fontWeight: "700", fontSize: 16, overflow: "hidden" },
-  badge: { minWidth: 58, borderRadius: 18, backgroundColor: colors.green, paddingVertical: 10, paddingHorizontal: 12, alignItems: "center" },
+  rankNumber: { width: 34, height: 34, borderRadius: 17, textAlign: "center", textAlignVertical: "center", backgroundColor: colors.scoreBox, color: colors.primaryStrong, fontWeight: "700", fontSize: 16, overflow: "hidden" },
+  badge: { minWidth: 58, borderRadius: 18, backgroundColor: colors.primaryStrong, paddingVertical: 10, paddingHorizontal: 12, alignItems: "center" },
   badgeValue: { color: "#ffffff", fontSize: 20, fontWeight: "700" },
-  badgeLabel: { color: "#dce5dd", fontSize: 11 },
+  badgeLabel: { color: colors.heroMuted, fontSize: 11 },
   itemTitle: { color: colors.ink, fontSize: 17, fontWeight: "700" },
   itemText: { color: colors.ink, fontSize: 15, lineHeight: 20 },
-  itemValue: { color: colors.green2, fontSize: 15, fontWeight: "700" },
-  infoBox: { backgroundColor: "#edf2eb", borderRadius: 18, padding: 14 },
-  infoText: { color: colors.green2, fontSize: 14, lineHeight: 19 },
-  holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e6dfcf", alignItems: "center", justifyContent: "center" },
+  itemValue: { color: colors.primaryStrong, fontSize: 15, fontWeight: "700" },
+  infoBox: { backgroundColor: colors.scoreBox, borderRadius: 18, padding: 14 },
+  infoText: { color: colors.primaryStrong, fontSize: 14, lineHeight: 19 },
+  holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.chip, alignItems: "center", justifyContent: "center" },
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   scoreInfo: { flex: 1, gap: 2 },
   playerEntryCard: { overflow: "hidden" },
@@ -2850,30 +3534,30 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     backgroundColor: colors.panel,
     borderTopWidth: 1,
-    borderTopColor: "#e5dcc7",
+    borderTopColor: colors.line,
   },
-  entryTotalCard: { flex: 1, backgroundColor: "#edf2eb", borderRadius: 18, padding: 12, gap: 4 },
-  entryTotalValue: { color: colors.green2, fontSize: 28, lineHeight: 32, fontWeight: "700" },
-  playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  entryTotalCard: { flex: 1, backgroundColor: colors.scoreBox, borderRadius: 18, padding: 12, gap: 4 },
+  entryTotalValue: { color: colors.primaryStrong, fontSize: 28, lineHeight: 32, fontWeight: "700" },
+  playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
   playerEntryInfo: { flex: 1, gap: 2 },
-  scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
-  scoreInputBlob: { color: colors.green2 },
-  blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center" },
-  blobButtonActive: { backgroundColor: colors.green },
-  blobButtonText: { color: colors.green2, fontSize: 12, fontWeight: "700" },
+  scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
+  scoreInputBlob: { color: colors.primaryStrong },
+  blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border },
+  blobButtonActive: { backgroundColor: colors.primaryStrong },
+  blobButtonText: { color: colors.primaryStrong, fontSize: 12, fontWeight: "700" },
   blobButtonTextActive: { color: "#ffffff" },
-  pointsBox: { width: 58, borderRadius: 16, backgroundColor: "#edf2eb", paddingVertical: 10, alignItems: "center" },
-  pointsText: { color: colors.green2, fontSize: 20, fontWeight: "700" },
-  playerChip: { backgroundColor: "#e6dfcf", borderRadius: 18, paddingVertical: 12, paddingHorizontal: 14, gap: 2 },
-  playerChipActive: { backgroundColor: colors.green },
-  playerChipName: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  pointsBox: { width: 58, borderRadius: 16, backgroundColor: colors.scoreBox, paddingVertical: 10, alignItems: "center" },
+  pointsText: { color: colors.primaryStrong, fontSize: 20, fontWeight: "700" },
+  playerChip: { backgroundColor: colors.chip, borderRadius: 18, paddingVertical: 12, paddingHorizontal: 14, gap: 2 },
+  playerChipActive: { backgroundColor: colors.primaryStrong },
+  playerChipName: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
   playerChipNameActive: { color: "#ffffff" },
   playerChipMeta: { color: colors.muted, fontSize: 12 },
-  playerChipMetaActive: { color: "#dce5dd" },
-  noteCard: { backgroundColor: colors.soft, borderRadius: 22, padding: 18, gap: 10 },
-  noteText: { color: "#4e4a41", fontSize: 14, lineHeight: 20 },
+  playerChipMetaActive: { color: colors.heroMuted },
+  noteCard: { backgroundColor: colors.pale, borderRadius: 22, padding: 18, gap: 10, borderWidth: 1, borderColor: colors.border },
+  noteText: { color: colors.note, fontSize: 14, lineHeight: 20 },
   modalScrim: { flex: 1, justifyContent: "center", padding: 20 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(20,55,38,0.5)" },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.overlay },
   modalCard: { maxHeight: "85%", backgroundColor: colors.panel, borderRadius: 24, borderWidth: 1, borderColor: colors.border, padding: 18, gap: 14 },
   modalHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   modalTitleWrap: { flex: 1, gap: 4 },
@@ -2881,13 +3565,14 @@ const styles = StyleSheet.create({
   modalCloseButton: { backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14 },
   modalScroll: { flexGrow: 0 },
   modalScrollContent: { gap: 10, paddingBottom: 4 },
-  scorecardModalFrame: { backgroundColor: "#ffffff", borderRadius: 18, padding: 12, minHeight: 380, justifyContent: "center" },
-  scorecardModalImage: { width: "100%", height: 420, borderRadius: 12, backgroundColor: "#ece6d7" },
+  scorecardModalFrame: { backgroundColor: colors.field, borderRadius: 18, padding: 12, minHeight: 380, justifyContent: "center" },
+  scorecardModalImage: { width: "100%", height: 420, borderRadius: 12, backgroundColor: colors.preview },
   modalHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.pale, borderRadius: 18, padding: 12 },
   modalHoleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
-  modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#edf2eb", alignItems: "center", justifyContent: "center" },
-  modalHoleNumberText: { color: colors.green2, fontSize: 16, fontWeight: "700" },
-  modalStat: { width: 58, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 8, alignItems: "center" },
+  modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.scoreBox, alignItems: "center", justifyContent: "center" },
+  modalHoleNumberText: { color: colors.primaryStrong, fontSize: 16, fontWeight: "700" },
+  modalStat: { width: 58, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 8, alignItems: "center" },
   modalStatLabel: { color: colors.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6 },
-  modalStatValue: { color: colors.green2, fontSize: 18, fontWeight: "700" },
+  modalStatValue: { color: colors.primaryStrong, fontSize: 18, fontWeight: "700" },
 });
+

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Missfits Rollup Golf Calculator",
     "slug": "fairway-mobile",
-    "version": "1.5.2",
+    "version": "2.0.0",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -26,7 +26,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.podavies.fairway",
-      "buildNumber": "17",
+      "buildNumber": "18",
       "config": {
         "usesNonExemptEncryption": false
       }
@@ -34,7 +34,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#123524"
+        "backgroundColor": "#f2f2f2"
       }
     },
     "extra": {
