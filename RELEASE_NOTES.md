@@ -11,6 +11,14 @@ Released: 27 March 2026
 - Reduced scroll conflicts between the main page and the player score list during live score entry.
 - Shipped the release as iOS build `17` for TestFlight.
 
+### App Store copy
+
+Fairway 1.5.2 makes live scoring smoother.
+
+- Single-tap single-digit score entry is back in both group and player modes
+- It is easier to scroll back and correct earlier holes while the keyboard is open
+- Player score entry now has smoother scrolling during live edits
+
 ### What to test
 
 - Enter scores in both `By group` and `By player`.
