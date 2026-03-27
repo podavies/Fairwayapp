@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import * as FileSystem from "expo-file-system/legacy";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
@@ -965,7 +966,7 @@ export default function App() {
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
-  const playerEntryRowOffsets = useRef<Record<string, number>>({});
+  const playerEntryRowOffsets = useRef<Record<number, number>>({});
   const pendingAdvanceTimeouts = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
   const playerEntryKeys = useMemo(
     () => (scoreEntryPlayer ? scoreEntryCourse.map((hole) => `player:${scoreEntryPlayer.id}:${hole.number}`) : []),
@@ -999,6 +1000,19 @@ export default function App() {
     const nextIndex = Math.max(0, Math.min(groupedScoreEntryPlayers.length - 1, safeIndex + delta));
     setScoreEntryPlayerId(groupedScoreEntryPlayers[nextIndex]?.id ?? null);
   };
+
+  const selectScoreEntryPlayer = (playerId: string) => {
+    clearAllPendingAdvances();
+    Keyboard.dismiss();
+    setScoreEntryPlayerId(playerId);
+  };
+
+  const openPlayerSummary = (playerId: string) => {
+    clearAllPendingAdvances();
+    Keyboard.dismiss();
+    setSelectedPlayerId(playerId);
+  };
+
   const playerEntryPanResponder = PanResponder.create({
     onStartShouldSetPanResponderCapture: () => false,
     onMoveShouldSetPanResponderCapture: (_, gestureState) =>
@@ -1132,8 +1146,18 @@ export default function App() {
     [],
   );
 
+  const getHoleNumberFromPlayerEntryKey = (key: string) => {
+    const holeNumber = Number(key.split(":")[2]);
+    return Number.isFinite(holeNumber) ? holeNumber : null;
+  };
+
   const scrollPlayerEntryInputIntoView = (key: string) => {
-    const rowOffset = playerEntryRowOffsets.current[key];
+    const holeNumber = getHoleNumberFromPlayerEntryKey(key);
+    if (holeNumber === null) {
+      return;
+    }
+
+    const rowOffset = playerEntryRowOffsets.current[holeNumber];
     if (rowOffset === undefined) {
       return;
     }
@@ -1178,7 +1202,11 @@ export default function App() {
         keyboardVerticalOffset={12}
       >
       <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      >
         <View style={styles.hero}>
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
           <Text style={styles.heroTitle}>Create rollups, log scores, and save results in one app.</Text>
@@ -2177,7 +2205,7 @@ export default function App() {
                                     Blob
                                   </Text>
                                 </Pressable>
-                                <Pressable onPress={() => setSelectedPlayerId(player.id)} style={styles.pointsBox}>
+                                <Pressable onPress={() => openPlayerSummary(player.id)} style={styles.pointsBox}>
                                   <Text style={styles.pointsText}>{holePoints(player, holeForPlayer(round.tees, player, groupSelectedHole))}</Text>
                                   <Text style={styles.badgeLabel}>pts</Text>
                                 </Pressable>
@@ -2190,13 +2218,18 @@ export default function App() {
                   </>
                 ) : (
                   <View {...playerEntryPanResponder.panHandlers}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.chipRow}
+                      keyboardShouldPersistTaps="handled"
+                    >
                       {groupedScoreEntryPlayers.map((player) => {
                         const active = player.id === scoreEntryPlayer?.id;
                         return (
                           <Pressable
                             key={player.id}
-                            onPress={() => setScoreEntryPlayerId(player.id)}
+                            onPress={() => selectScoreEntryPlayer(player.id)}
                             style={[styles.playerChip, active && styles.playerChipActive]}
                           >
                             <Text style={[styles.playerChipName, active && styles.playerChipNameActive]}>{player.name}</Text>
@@ -2225,16 +2258,17 @@ export default function App() {
                             style={styles.playerEntryList}
                             contentContainerStyle={styles.playerEntryListContent}
                             nestedScrollEnabled
-                            keyboardShouldPersistTaps="handled"
+                            keyboardShouldPersistTaps="always"
+                            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
                           >
                             {scoreEntryCourse.map((hole) => {
                               const inputKey = `player:${scoreEntryPlayer.id}:${hole.number}`;
                               return (
-                              <View
+                                <View
                                 key={hole.number}
                                 style={styles.playerEntryRow}
                                 onLayout={(event) => {
-                                  playerEntryRowOffsets.current[inputKey] = event.nativeEvent.layout.y;
+                                  playerEntryRowOffsets.current[hole.number] = event.nativeEvent.layout.y;
                                 }}
                               >
                                 <View style={styles.playerEntryInfo}>
@@ -2280,7 +2314,7 @@ export default function App() {
                                     Blob
                                   </Text>
                                 </Pressable>
-                                <Pressable onPress={() => setSelectedPlayerId(scoreEntryPlayer.id)} style={styles.pointsBox}>
+                                <Pressable onPress={() => openPlayerSummary(scoreEntryPlayer.id)} style={styles.pointsBox}>
                                   <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
                                   <Text style={styles.badgeLabel}>pts</Text>
                                 </Pressable>
