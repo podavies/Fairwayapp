@@ -11,6 +11,12 @@ Cross-platform golf mobile app starter for iOS and Android using Expo and React 
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the current release notes.
 
+## Branch Strategy
+
+- `1.0.0` is the live maintenance branch and should receive bug fixes for the shipped app.
+- `2.0.0` is reserved for future V2 development work.
+- Keep release fixes and V2 feature work separate so the live app can ship independently.
+
 ## MVP included
 
 - Hero dashboard with golfer profile summary
