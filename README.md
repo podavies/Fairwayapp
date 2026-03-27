@@ -2,13 +2,14 @@
 
 Cross-platform golf mobile app starter for iOS and Android using Expo and React Native.
 
-## Version 1.2.3
+## Version 1.5.2
 
-- Added a reusable course library so course and tee setups can be saved and loaded into later rounds.
-- Fixed tee editing so tee names can be cleared while typing instead of snapping back.
-- Group score entry keeps each group on its own hole, with swipe navigation and automatic next-hole advance.
-- Player score entry follows group order and supports swipe navigation between players.
-- Score inputs now allow two-digit values for higher gross scores when needed.
+- Added stronger live score entry flows for both `By group` and `By player`.
+- Restored one-tap single-digit score entry in both scoring modes.
+- Improved score correction while the keyboard is open so earlier holes are easier to revisit.
+- Reduced scroll conflicts during player score entry.
+
+See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the current release notes.
 
 ## MVP included
 
