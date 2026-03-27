@@ -968,6 +968,7 @@ export default function App() {
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
   const playerEntryRowOffsets = useRef<Record<number, number>>({});
   const pendingAdvanceTimeouts = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+  const [focusedPlayerEntryKey, setFocusedPlayerEntryKey] = useState<string | null>(null);
   const playerEntryKeys = useMemo(
     () => (scoreEntryPlayer ? scoreEntryCourse.map((hole) => `player:${scoreEntryPlayer.id}:${hole.number}`) : []),
     [scoreEntryCourse, scoreEntryPlayer],
@@ -1115,12 +1116,18 @@ export default function App() {
     orderedKeys: string[],
     currentKey: string,
     onComplete?: () => void,
+    maxDigits = 2,
   ) => {
-    const sanitized = value.replace(/[^0-9]/g, "").slice(0, 2);
+    const sanitized = value.replace(/[^0-9]/g, "").slice(0, maxDigits);
     updatePlayerScore(playerId, holeNumber, sanitized);
     clearPendingAdvance(currentKey);
 
     if (!sanitized) {
+      return;
+    }
+
+    if (maxDigits === 1) {
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
       return;
     }
 
@@ -1145,6 +1152,22 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      setFocusedPlayerEntryKey(null);
+    });
+
+    return () => {
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "live" || liveSection !== "entry" || scoreEntryMode !== "player") {
+      setFocusedPlayerEntryKey(null);
+    }
+  }, [liveSection, scoreEntryMode, tab]);
 
   const getHoleNumberFromPlayerEntryKey = (key: string) => {
     const holeNumber = Number(key.split(":")[2]);
@@ -1204,8 +1227,10 @@ export default function App() {
       <StatusBar style="light" />
       <ScrollView
         contentContainerStyle={styles.content}
+        nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        scrollEnabled={!focusedPlayerEntryKey}
       >
         <View style={styles.hero}>
           <Text style={styles.kicker}>Golf Rollup Manager</Text>
@@ -2180,12 +2205,13 @@ export default function App() {
                                   groupEntryKeys,
                                   `group:${group.id}:${groupSelectedHole}:${player.id}`,
                                   advanceToNextGroupHole,
+                                  1,
                                 )
                               }
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor="#8a877f"
-                              maxLength={2}
+                              maxLength={1}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -2265,61 +2291,66 @@ export default function App() {
                               const inputKey = `player:${scoreEntryPlayer.id}:${hole.number}`;
                               return (
                                 <View
-                                key={hole.number}
-                                style={styles.playerEntryRow}
-                                onLayout={(event) => {
-                                  playerEntryRowOffsets.current[hole.number] = event.nativeEvent.layout.y;
-                                }}
-                              >
-                                <View style={styles.playerEntryInfo}>
-                                  <Text style={styles.itemText}>Hole {hole.number} • {hole.name}</Text>
-                                  <Text style={styles.meta}>
-                                    Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds • Gets {strokes(scoreEntryPlayer.handicap, hole.strokeIndex)} shot{strokes(scoreEntryPlayer.handicap, hole.strokeIndex) === 1 ? "" : "s"}
-                                  </Text>
-                                </View>
-                                <TextInput
-                                  ref={(ref) => {
-                                    inputRefs.current[inputKey] = ref;
+                                  key={hole.number}
+                                  style={styles.playerEntryRow}
+                                  onLayout={(event) => {
+                                    playerEntryRowOffsets.current[hole.number] = event.nativeEvent.layout.y;
                                   }}
-                                  value={scoreDisplayValue(scoreEntryPlayer.scores[hole.number])}
-                                  onChangeText={(value) =>
-                                    handleScoreInputChange(
-                                      scoreEntryPlayer.id,
-                                      hole.number,
-                                      value,
-                                      playerEntryKeys,
-                                      inputKey,
-                                    )
-                                  }
-                                  keyboardType="number-pad"
-                                  placeholder="Score"
-                                  placeholderTextColor="#8a877f"
-                                  maxLength={2}
-                                  blurOnSubmit={false}
-                                  onFocus={() => scrollPlayerEntryInputIntoView(inputKey)}
-                                  style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
-                                />
-                                <Pressable
-                                  onPress={() =>
-                                    toggleBlobScore(
-                                      scoreEntryPlayer.id,
-                                      hole.number,
-                                      playerEntryKeys,
-                                      inputKey,
-                                    )
-                                  }
-                                  style={[styles.blobButton, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonActive]}
                                 >
-                                  <Text style={[styles.blobButtonText, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
-                                    Blob
-                                  </Text>
-                                </Pressable>
-                                <Pressable onPress={() => openPlayerSummary(scoreEntryPlayer.id)} style={styles.pointsBox}>
-                                  <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
-                                  <Text style={styles.badgeLabel}>pts</Text>
-                                </Pressable>
-                              </View>
-                            );
+                                  <View style={styles.playerEntryInfo}>
+                                    <Text style={styles.itemText}>Hole {hole.number} • {hole.name}</Text>
+                                    <Text style={styles.meta}>
+                                      Par {hole.par} • SI {hole.strokeIndex} • {hole.yardage} yds • Gets {strokes(scoreEntryPlayer.handicap, hole.strokeIndex)} shot{strokes(scoreEntryPlayer.handicap, hole.strokeIndex) === 1 ? "" : "s"}
+                                    </Text>
+                                  </View>
+                                  <TextInput
+                                    ref={(ref) => {
+                                      inputRefs.current[inputKey] = ref;
+                                    }}
+                                    value={scoreDisplayValue(scoreEntryPlayer.scores[hole.number])}
+                                    onChangeText={(value) =>
+                                      handleScoreInputChange(
+                                        scoreEntryPlayer.id,
+                                        hole.number,
+                                        value,
+                                        playerEntryKeys,
+                                        inputKey,
+                                        undefined,
+                                        1,
+                                      )
+                                    }
+                                    keyboardType="number-pad"
+                                    placeholder="Score"
+                                    placeholderTextColor="#8a877f"
+                                    maxLength={1}
+                                    blurOnSubmit={false}
+                                    onFocus={() => {
+                                      setFocusedPlayerEntryKey(inputKey);
+                                      scrollPlayerEntryInputIntoView(inputKey);
+                                    }}
+                                    style={[styles.scoreInput, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.scoreInputBlob]}
+                                  />
+                                  <Pressable
+                                    onPress={() =>
+                                      toggleBlobScore(
+                                        scoreEntryPlayer.id,
+                                        hole.number,
+                                        playerEntryKeys,
+                                        inputKey,
+                                      )
+                                    }
+                                    style={[styles.blobButton, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonActive]}
+                                  >
+                                    <Text style={[styles.blobButtonText, scoreEntryPlayer.scores[hole.number] === BLOB_SCORE && styles.blobButtonTextActive]}>
+                                      Blob
+                                    </Text>
+                                  </Pressable>
+                                  <Pressable onPress={() => openPlayerSummary(scoreEntryPlayer.id)} style={styles.pointsBox}>
+                                    <Text style={styles.pointsText}>{holePoints(scoreEntryPlayer, hole)}</Text>
+                                    <Text style={styles.badgeLabel}>pts</Text>
+                                  </Pressable>
+                                </View>
+                              );
                             })}
                           </ScrollView>
                           {scoreEntryRunningTotals ? (
