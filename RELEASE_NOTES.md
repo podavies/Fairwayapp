@@ -1,4 +1,4 @@
-# Fairway Release Notes
+# Missfits Rollup Golf Calculator Release Notes
 
 ## Version 1.5.2
 
@@ -13,7 +13,7 @@ Released: 27 March 2026
 
 ### App Store copy
 
-Fairway 1.5.2 makes live scoring smoother.
+Missfits Rollup Golf Calculator 1.5.2 makes live scoring smoother.
 
 - Single-tap single-digit score entry is back in both group and player modes
 - It is easier to scroll back and correct earlier holes while the keyboard is open

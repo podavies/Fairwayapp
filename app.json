@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Fairway",
+    "name": "Missfits Rollup Golf Calculator",
     "slug": "fairway-mobile",
     "version": "1.5.2",
     "icon": "./assets/icon.png",
@@ -17,8 +17,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Fairway to access your photos so you can attach scorecard images.",
-          "cameraPermission": "Allow Fairway to use your camera so you can scan a scorecard image.",
+          "photosPermission": "Allow Missfits Rollup Golf Calculator to access your photos so you can attach scorecard images.",
+          "cameraPermission": "Allow Missfits Rollup Golf Calculator to use your camera so you can scan a scorecard image.",
           "microphonePermission": false
         }
       ]

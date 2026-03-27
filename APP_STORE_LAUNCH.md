@@ -1,19 +1,19 @@
-# Fairway App Store Launch Pack
+# Missfits Rollup Golf Calculator App Store Launch Pack
 
 ## App identity
 
-- App name: Fairway
+- App name: Missfits Rollup Golf Calculator
 - Subtitle: Golf Rollup Scoring
 - Bundle ID: com.podavies.fairway
 - Primary category: Sports
 
 ## App Store description
 
-Fairway helps golf groups run rollups clearly and quickly.
+Missfits Rollup Golf Calculator helps golf groups run rollups clearly and quickly.
 
-Create your rollup, set up groups, choose tees, and log hole-by-hole scores with Stableford points already worked out for you. Fairway is built for mixed 3-balls and 4-balls, including shared ghost-player handling for mixed fields, so you can keep the scoring fair and easy to follow.
+Create your rollup, set up groups, choose tees, and log hole-by-hole scores with Stableford points already worked out for you. Missfits Rollup Golf Calculator is built for mixed 3-balls and 4-balls, including shared ghost-player handling for mixed fields, so you can keep the scoring fair and easy to follow.
 
-Use Fairway to:
+Use Missfits Rollup Golf Calculator to:
 
 - create a rollup before the round
 - add players, handicaps, groups, and tees
@@ -22,7 +22,7 @@ Use Fairway to:
 - view player and group leaderboards
 - save completed rounds on your device
 
-Fairway is designed for simple, practical rollup scoring without spreadsheets or paper totals.
+Missfits Rollup Golf Calculator is designed for simple, practical rollup scoring without spreadsheets or paper totals.
 
 ## Promotional text
 
@@ -30,7 +30,7 @@ Build your rollup, customise your course, and log Stableford scores in one place
 
 ## What's New in 1.5.2
 
-Fairway 1.5.2 makes live scoring smoother.
+Missfits Rollup Golf Calculator 1.5.2 makes live scoring smoother.
 
 - Single-tap single-digit score entry is back in both group and player modes
 - It is easier to scroll back and correct earlier holes while the keyboard is open
@@ -54,7 +54,7 @@ Host `PRIVACY_POLICY.md` somewhere public and make sure it clearly lists the pri
 
 ## Review notes
 
-Fairway is a golf score logging app for rollup competitions. There is no account creation, no paid content, and no external sign-in required to test the core experience.
+Missfits Rollup Golf Calculator is a golf score logging app for rollup competitions. There is no account creation, no paid content, and no external sign-in required to test the core experience.
 
 ## Screenshot plan
 

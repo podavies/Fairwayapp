@@ -1,4 +1,4 @@
-# Fairway
+# Missfits Rollup Golf Calculator
 
 Cross-platform golf mobile app starter for iOS and Android using Expo and React Native.
 
