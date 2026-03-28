@@ -10,6 +10,7 @@ Version 2 should also introduce a true shared scorecard flow so multiple players
 
 - V1 is now in maintenance mode and should only take bug fixes and security fixes.
 - All new feature work should target the V2 branch and V2 storage model.
+- Any V1 bug fix that affects scoring, score entry, navigation, or layout should be reviewed and carried into V2 before the V2 release is considered ready.
 
 ## UK-first assumptions
 

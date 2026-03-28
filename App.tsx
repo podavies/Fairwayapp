@@ -1284,6 +1284,7 @@ export default function App() {
   const inputRefs = useRef<Record<string, TextInput | null>>({});
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
   const playerEntryRowOffsets = useRef<Record<number, number>>({});
+  const pendingGroupFocusKey = useRef<string | null>(null);
   const pendingAdvanceTimeouts = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
   const [focusedPlayerEntryKey, setFocusedPlayerEntryKey] = useState<string | null>(null);
   const playerEntryKeys = useMemo(
@@ -1291,19 +1292,35 @@ export default function App() {
     [scoreEntryCourse, scoreEntryPlayer],
   );
 
-  const setGroupEntryHole = (groupId: string, holeNumber: number) => {
-    setGroupEntryHoleByGroup((current) => ({
-      ...current,
-      [groupId]: Math.max(1, Math.min(18, holeNumber)),
-    }));
+  const requestGroupEntryFocus = (key: string | null) => {
+    pendingGroupFocusKey.current = key;
   };
 
-  const advanceGroupEntryHole = (groupId: string, delta: number) => {
+  const setGroupEntryHole = (groupId: string, holeNumber: number, focusPlayerId?: string) => {
     setGroupEntryHoleByGroup((current) => {
-      const currentHole = current[groupId] ?? 1;
+      const nextHole = Math.max(1, Math.min(18, holeNumber));
+      if (focusPlayerId) {
+        requestGroupEntryFocus(`group:${groupId}:${nextHole}:${focusPlayerId}`);
+      }
+
       return {
         ...current,
-        [groupId]: Math.max(1, Math.min(18, currentHole + delta)),
+        [groupId]: nextHole,
+      };
+    });
+  };
+
+  const advanceGroupEntryHole = (groupId: string, delta: number, focusPlayerId?: string) => {
+    setGroupEntryHoleByGroup((current) => {
+      const currentHole = current[groupId] ?? 1;
+      const nextHole = Math.max(1, Math.min(18, currentHole + delta));
+      if (focusPlayerId && nextHole !== currentHole) {
+        requestGroupEntryFocus(`group:${groupId}:${nextHole}:${focusPlayerId}`);
+      }
+
+      return {
+        ...current,
+        [groupId]: nextHole,
       };
     });
   };
@@ -1508,6 +1525,22 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    const nextKey = pendingGroupFocusKey.current;
+    if (!nextKey) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      inputRefs.current[nextKey]?.focus();
+      requestGroupEntryFocus(null);
+    }, 80);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [groupEntryHoleByGroup]);
+
   const clearCurrentRound = () => {
     setRound(blankRound());
     setSelectedHole(1);
@@ -1612,12 +1645,15 @@ export default function App() {
                 placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
-              <View style={styles.buttonRow}>
-                <Pressable onPress={() => { setRound(blankRound()); setSelectedHole(1); setTab("setup"); }} style={styles.secondaryButton}>
-                  <Text style={styles.secondaryText}>New blank round</Text>
-                </Pressable>
+              <View style={styles.roundDetailActions}>
                 <Pressable onPress={() => setTab("live")} style={styles.primaryButton}>
                   <Text style={styles.primaryText}>Log scores</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setRound(blankRound()); setSelectedHole(1); setTab("setup"); }}
+                  style={styles.roundDetailSecondaryButton}
+                >
+                  <Text style={styles.roundDetailSecondaryText}>Start new blank round</Text>
                 </Pressable>
               </View>
               {__DEV__ ? (
@@ -2753,9 +2789,10 @@ export default function App() {
                         const groupCurrentHole =
                           selectedTee.course.find((hole) => hole.number === groupSelectedHole) ?? selectedTee.course[0] ?? defaultCourse[0];
                         const groupEntryKeys = members.map((player) => `group:${group.id}:${groupSelectedHole}:${player.id}`);
+                        const firstGroupMemberId = members[0]?.id;
                         const advanceToNextGroupHole = () => {
                           if (groupSelectedHole < 18) {
-                            advanceGroupEntryHole(group.id, 1);
+                            advanceGroupEntryHole(group.id, 1, firstGroupMemberId);
                           }
                         };
                         const groupPanResponder = PanResponder.create({
@@ -2894,6 +2931,35 @@ export default function App() {
                           </Text>
                         </View>
                         <View style={styles.playerEntryBody}>
+                          {scoreEntryRunningTotals ? (
+                            <View style={styles.entryTotalsBar}>
+                              <View style={styles.entryTotalsRow}>
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Running shots</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.shots}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.grossLogged} gross score{scoreEntryRunningTotals.grossLogged === 1 ? "" : "s"} logged
+                                  </Text>
+                                </View>
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Running points</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.points}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.holesLogged}/18 holes recorded
+                                  </Text>
+                                </View>
+                              </View>
+                              {scoreEntryRunningTotals.frontNine?.holesLogged === 9 ? (
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Front 9 total</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.frontNine.shots}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.frontNine.points} point{scoreEntryRunningTotals.frontNine.points === 1 ? "" : "s"} through 9 holes
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
                           <ScrollView
                             ref={playerEntryScrollRef}
                             style={styles.playerEntryList}
@@ -2968,24 +3034,6 @@ export default function App() {
                               );
                             })}
                           </ScrollView>
-                          {scoreEntryRunningTotals ? (
-                            <View style={styles.entryTotalsBar}>
-                              <View style={styles.entryTotalCard}>
-                                <Text style={styles.smallLabel}>Running shots</Text>
-                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.shots}</Text>
-                                <Text style={styles.meta}>
-                                  {scoreEntryRunningTotals.grossLogged} gross score{scoreEntryRunningTotals.grossLogged === 1 ? "" : "s"} logged
-                                </Text>
-                              </View>
-                              <View style={styles.entryTotalCard}>
-                                <Text style={styles.smallLabel}>Running points</Text>
-                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.points}</Text>
-                                <Text style={styles.meta}>
-                                  {scoreEntryRunningTotals.holesLogged}/18 holes recorded
-                                </Text>
-                              </View>
-                            </View>
-                          ) : null}
                         </View>
                       </View>
                     ) : (
@@ -3460,12 +3508,23 @@ const styles = StyleSheet.create({
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
   cardHeaderCopy: { flex: 1, gap: 4 },
   cardHeaderActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 8 },
+  roundDetailActions: { gap: 10 },
   buttonRow: { flexDirection: "row", gap: 12 },
   primaryButton: { flex: 1, backgroundColor: colors.primaryStrong, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
   secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center", borderWidth: 1, borderColor: colors.border },
   buttonDisabled: { opacity: 0.65 },
   primaryText: { color: "#ffffff", fontWeight: "700", fontSize: 14 },
   secondaryText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
+  roundDetailSecondaryButton: {
+    alignSelf: "flex-start",
+    backgroundColor: colors.field,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  roundDetailSecondaryText: { color: colors.muted, fontWeight: "700", fontSize: 13 },
   smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.border },
   smallButtonText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 12 },
   suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
@@ -3521,21 +3580,11 @@ const styles = StyleSheet.create({
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   scoreInfo: { flex: 1, gap: 2 },
   playerEntryCard: { overflow: "hidden" },
-  playerEntryBody: { position: "relative", height: 500 },
+  playerEntryBody: { height: 500, gap: 12 },
   playerEntryList: { flex: 1 },
-  playerEntryListContent: { paddingBottom: 128 },
-  entryTotalsBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: "row",
-    gap: 10,
-    paddingTop: 14,
-    backgroundColor: colors.panel,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-  },
+  playerEntryListContent: { paddingBottom: 24 },
+  entryTotalsBar: { gap: 10 },
+  entryTotalsRow: { flexDirection: "row", gap: 10 },
   entryTotalCard: { flex: 1, backgroundColor: colors.scoreBox, borderRadius: 18, padding: 12, gap: 4 },
   entryTotalValue: { color: colors.primaryStrong, fontSize: 28, lineHeight: 32, fontWeight: "700" },
   playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
