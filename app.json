@@ -2,13 +2,13 @@
   "expo": {
     "name": "Fairway",
     "slug": "fairway-mobile",
-    "version": "1.5.2",
+    "version": "1.5.3",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
       "resizeMode": "contain",
-      "backgroundColor": "#f4efe1"
+      "backgroundColor": "#f2f2f2"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.podavies.fairway",
-      "buildNumber": "17",
+      "buildNumber": "20",
       "config": {
         "usesNonExemptEncryption": false
       }
@@ -24,7 +24,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#123524"
+        "backgroundColor": "#f2f2f2"
       }
     },
     "extra": {

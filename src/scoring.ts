@@ -91,15 +91,25 @@ export const completedGrossScores = (
     (hole) => grossScoreValue(player.scores[hole.number]) > 0,
   ).length;
 
+function buildTotalsForHoles(player: ScorePlayer, holes: ScoreHole[]) {
+  return {
+    shots: holes.reduce((sum, hole) => sum + grossScoreValue(player.scores[hole.number]), 0),
+    points: holes.reduce((sum, hole) => sum + holePoints(player, hole), 0),
+    grossLogged: holes.filter((hole) => grossScoreValue(player.scores[hole.number]) > 0).length,
+    holesLogged: holes.filter((hole) => scoreEntered(player.scores[hole.number])).length,
+  };
+}
+
 export function buildScoreEntryRunningTotals(
   player: ScorePlayer,
   tees: ScoreTeeSet[],
   fallbackCourse: ScoreHole[] = [],
 ) {
+  const course = courseForPlayer(tees, player, fallbackCourse);
+  const frontNine = course.filter((hole) => hole.number >= 1 && hole.number <= 9);
+
   return {
-    shots: totalShots(player, tees, fallbackCourse),
-    points: totalPoints(player, tees, fallbackCourse),
-    grossLogged: completedGrossScores(player, tees, fallbackCourse),
-    holesLogged: completed(player, tees, fallbackCourse),
+    ...buildTotalsForHoles(player, course),
+    frontNine: frontNine.length === 9 ? buildTotalsForHoles(player, frontNine) : null,
   };
 }

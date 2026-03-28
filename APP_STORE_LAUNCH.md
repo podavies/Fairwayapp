@@ -28,13 +28,13 @@ Fairway is designed for simple, practical rollup scoring without spreadsheets or
 
 Build your rollup, customise your course, and log Stableford scores in one place.
 
-## What's New in 1.5.2
+## What's New in 1.5.3
 
-Fairway 1.5.2 makes live scoring smoother.
+Fairway 1.5.3 refreshes the app look and smooths live scoring.
 
-- Single-tap single-digit score entry is back in both group and player modes
-- It is easier to scroll back and correct earlier holes while the keyboard is open
-- Player score entry now has smoother scrolling during live edits
+- New icon and updated in-app colours inspired by V2
+- Group score entry now starts the next hole on the first player
+- Player score entry shows clearer running totals, including the front nine after hole 9
 
 ## Keywords
 
