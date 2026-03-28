@@ -1,5 +1,5 @@
 param(
-  [int]$Port = 8082,
+  [int]$Port = 8083,
   [switch]$DryRun
 )
 
@@ -26,7 +26,7 @@ foreach ($portToClear in $portsToClear) {
   }
 }
 
-$expoArgs = @("expo", "start", "--tunnel", "--clear", "--port", "$Port")
+$expoArgs = @("expo", "start", "--dev-client", "--tunnel", "--clear", "--port", "$Port")
 
 if ($DryRun) {
   foreach ($entry in $processesToStop.GetEnumerator() | Sort-Object Name) {

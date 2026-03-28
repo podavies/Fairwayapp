@@ -5,18 +5,22 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
+    "start:dev-client": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test:totals": "node --test .\\tests\\score-entry-totals.test.mjs",
     "test:ocr": "node --test .\\tests\\scorecard-ocr.test.mjs",
     "test:iphone": "powershell -ExecutionPolicy Bypass -File .\\scripts\\start-iphone-test.ps1",
+    "build:ios:dev": "npx eas-cli build --platform ios --profile development",
+    "build:ios:preview": "npx eas-cli build --platform ios --profile preview",
     "build:ios": "npx eas-cli build --platform ios --profile production",
     "submit:ios": "npx eas-cli submit --platform ios --profile production",
     "testflight": "npx testflight"
   },
   "dependencies": {
     "expo": "^54.0.0",
+    "expo-dev-client": "~6.0.20",
     "expo-file-system": "~19.0.21",
     "expo-image-picker": "~17.0.10",
     "expo-status-bar": "~3.0.9",
