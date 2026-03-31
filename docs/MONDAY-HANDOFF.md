@@ -41,6 +41,16 @@ Last updated: 31 March 2026
 - Submission ID for that earlier upload: `38ae1825-02a3-4199-882b-7b6fe10351fe`
 - Apple accepted that upload and began processing on 28 March 2026.
 - Current OCR regression-testing target is build `38`, bundling the local fixes discovered after checking build `37`.
+- Build `38` was submitted on 31 March 2026 from the real repo path `C:\Users\podav\Documents\missfits-rollup-golf-calculator`.
+- Build `38` Expo build ID: `897a72ab-9a59-487d-8a2b-e304382c803b`
+- Build `38` Expo submission ID: `c098939c-1c6a-48ea-9d30-68f978751b69`
+
+## Tomorrow's first task
+
+- When the app is opened next, assume we are testing TestFlight build `2.0.0 (38)`.
+- Use the troublesome shared white/yellow/red scorecard first.
+- Do not spend another paid cloud build before checking build `38` on-device.
+- Capture screenshots of the OCR preview and the full review card if anything is still wrong.
 
 ## Important rules from here
 
@@ -56,8 +66,9 @@ Last updated: 31 March 2026
 3. Specifically confirm holes `2` and `11` now appear in the OCR import and review flow.
 4. Confirm the split-side card can distinguish `Yellow Men`, `Yellow Ladies`, and `Red Ladies`, including ladies par overrides on holes `5` and `14`.
 5. Re-check the troublesome white tee path so hole `2` stays `413 / Par 4 / SI 4` and hole `9` stays `371 / Par 4 / SI 10`.
-6. Batch any further OCR fixes locally before requesting another cloud iOS build.
-7. Touch `1.5.3` only if a genuine production bug appears.
+6. Record whether the review checks stay green or whether `Apply anyway?` appears for this card.
+7. Batch any further OCR fixes locally before requesting another cloud iOS build.
+8. Touch `1.5.3` only if a genuine production bug appears.
 
 ## Useful commands
 

@@ -20,6 +20,9 @@ Keep using that identifier for V2 unless you intentionally want a separate iPhon
 - Build `35` had a regression where holes `2` and `11` were missing from the imported scorecard.
 - Build `37` showed the troublesome split-side card still needed more work: noisy header text leaked into suggestions, white hole `2` drifted to the wrong stroke index, and white hole `9` was misparsed.
 - Build `38` now bundles the local totals-repair and review-check fixes for that exact card before another paid cloud build is considered.
+- Build `38` Expo build ID: `897a72ab-9a59-487d-8a2b-e304382c803b`
+- Build `38` Expo submission ID: `c098939c-1c6a-48ea-9d30-68f978751b69`
+- On the next session, assume build `38` is the test target until a later build is explicitly created.
 
 ## What is already configured
 
