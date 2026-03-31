@@ -10,16 +10,16 @@ The current iOS bundle identifier in `app.json` is:
 
 The current V2 iOS build number in `app.json` is:
 
-- `37`
+- `38`
 
 Keep using that identifier for V2 unless you intentionally want a separate iPhone app listing.
 
 ## Current OCR test target
 
-- Treat build `37` as the next OCR validation target.
+- Treat build `38` as the next OCR validation target.
 - Build `35` had a regression where holes `2` and `11` were missing from the imported scorecard.
-- Build `36` was the last diagnosis build before bundling the current OCR parser and review-flow fixes.
-- When build `37` is installed, verify those two holes appear for both photo import and live camera capture before spending another paid cloud build.
+- Build `37` showed the troublesome split-side card still needed more work: noisy header text leaked into suggestions, white hole `2` drifted to the wrong stroke index, and white hole `9` was misparsed.
+- Build `38` now bundles the local totals-repair and review-check fixes for that exact card before another paid cloud build is considered.
 
 ## What is already configured
 
@@ -116,7 +116,7 @@ npx eas-cli build --platform ios --profile production --auto-submit
 
 - OCR is iPhone-only in the current V2 build.
 - OCR needs a custom Missfits app build and will not run in Expo Go.
-- Build `37` is the current OCR verification target.
+- Build `38` is the current OCR verification target.
 - Build `35` missed holes `2` and `11`, so those should be the first regression checks on the next installed build.
 - Repeated production/TestFlight builds may create EAS build charges.
 - Batch OCR fixes locally before requesting the next iOS cloud build.
