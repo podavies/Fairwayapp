@@ -8,7 +8,17 @@ The current iOS bundle identifier in `app.json` is:
 
 - `com.podavies.fairway`
 
+The current V2 iOS build number in `app.json` is:
+
+- `36`
+
 Keep using that identifier for V2 unless you intentionally want a separate iPhone app listing.
+
+## Current OCR test target
+
+- Treat build `36` as the next OCR validation target.
+- Build `35` had a regression where holes `2` and `11` were missing from the imported scorecard.
+- When build `36` is installed, verify those two holes appear for both photo import and live camera capture before spending another paid cloud build.
 
 ## What is already configured
 
@@ -49,6 +59,25 @@ npm run test:iphone
 
 That script starts the V2 dev server on port `8083` with `--dev-client` and `--tunnel`, which avoids the `1.5.3` worktree using `8082`.
 
+## Cost-safe OCR workflow
+
+Cloud iOS builds can consume paid EAS build usage, so do not send a new TestFlight build for every OCR tweak.
+
+Use this order instead:
+
+1. Collect OCR screenshots and failure notes from the current installed build.
+2. Fix and regression-test OCR locally with:
+
+```powershell
+npm run test:ocr
+npx tsc --noEmit
+```
+
+3. Batch several OCR fixes together before the next cloud iOS build.
+4. Only run a new production/TestFlight build when you explicitly want to ship a fresh tester build.
+
+If a dev client is already installed on the iPhone, prefer `npm run test:iphone` for JS and parser iteration instead of another TestFlight upload.
+
 ## TestFlight commands
 
 Expo's current docs also support a one-command TestFlight flow:
@@ -86,6 +115,10 @@ npx eas-cli build --platform ios --profile production --auto-submit
 
 - OCR is iPhone-only in the current V2 build.
 - OCR needs a custom Missfits app build and will not run in Expo Go.
+- Build `36` is the current OCR verification target.
+- Build `35` missed holes `2` and `11`, so those should be the first regression checks on the next installed build.
+- Repeated production/TestFlight builds may create EAS build charges.
+- Batch OCR fixes locally before requesting the next iOS cloud build.
 - TestFlight does not publish the app to the App Store.
 - Apple can take a little while to process a new uploaded build.
 - The current app can be prepared from Windows because EAS handles the iOS build remotely.

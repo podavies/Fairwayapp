@@ -1,14 +1,16 @@
 # Monday Handoff
 
-Last updated: 28 March 2026
+Last updated: 31 March 2026
 
 ## Current state
 
 - `1.5.3` is live on the iOS App Store.
 - `1.5.3` is now maintenance-only and should receive bug fixes only.
-- V2 is `2.0.0` and has been submitted to TestFlight as build `21`.
+- V2 is `2.0.0`.
+- `app.json` is currently set to iOS build `36` for the next OCR validation pass.
+- Build `35` exposed an OCR regression where holes `2` and `11` were missing from the imported card.
 - V2 branch: `codex/2.0-carryover-fixes`
-- V2 Git commit pushed to GitHub: `37f15ff` (`chore: prepare v2 ios device testing`)
+- Latest GitHub-pushed V2 commit before this OCR batch: `37f15ff` (`chore: prepare v2 ios device testing`)
 
 ## Project folders
 
@@ -23,26 +25,31 @@ Last updated: 28 March 2026
 - Added `start:dev-client`, `build:ios:dev`, and `build:ios:preview` scripts.
 - Updated the iPhone test script to use `--dev-client` on port `8083`.
 - Updated TestFlight/device-testing notes.
-- Bumped V2 iOS build number to `21`.
+- Bumped the V2 iOS build number to `36`.
+- Hardened scorecard OCR parsing for row-based, split-side, and bounded-cell OCR output.
+- Tightened the OCR review flow so incomplete imports do not silently keep scaffold defaults.
 
 ## TestFlight status
 
-- Build ID: `fc18a1df-5859-4e28-aa6b-ecb1afd0f7e2`
-- Submission ID: `38ae1825-02a3-4199-882b-7b6fe10351fe`
-- Apple accepted the upload and began processing on 28 March 2026.
+- Last confirmed processed/uploaded TestFlight submission in these notes was build `21`.
+- Build ID for that earlier upload: `fc18a1df-5859-4e28-aa6b-ecb1afd0f7e2`
+- Submission ID for that earlier upload: `38ae1825-02a3-4199-882b-7b6fe10351fe`
+- Apple accepted that upload and began processing on 28 March 2026.
+- Current OCR regression-testing target is build `36`, because build `35` dropped holes `2` and `11`.
 
 ## Important rules from here
 
 - Keep `1.5.3` for bug fixes only.
 - Put all new feature work into V2.
 - OCR testing must use a real iPhone build. Expo Go does not support the custom OCR module.
+- Do not send repeated paid TestFlight builds for single OCR tweaks. Batch OCR fixes locally first and only ship a new cloud iOS build when explicitly requested.
 
 ## Best next steps on Monday
 
-1. Check whether TestFlight build `2.0.0 (21)` has finished Apple processing.
-2. Install V2 on a real iPhone and test the OCR flow.
-3. Test both scorecard photo import and live camera capture.
-4. Fix any OCR or review-flow issues on V2 only.
+1. Install and test V2 build `2.0.0 (36)` on a real iPhone.
+2. Verify both scorecard photo import and live camera capture.
+3. Specifically confirm holes `2` and `11` now appear in the OCR import and review flow.
+4. Batch any further OCR fixes locally before requesting another cloud iOS build.
 5. Touch `1.5.3` only if a genuine production bug appears.
 
 ## Useful commands
@@ -50,6 +57,8 @@ Last updated: 28 March 2026
 ```powershell
 git status
 npm run test:iphone
+npm run test:ocr
+npx tsc --noEmit
 npm run build:ios:dev
 npm run build:ios
 npm run submit:ios

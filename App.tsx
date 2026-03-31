@@ -15,7 +15,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+  TextInput as RNTextInput,
   View,
 } from "react-native";
 import {
@@ -44,6 +44,15 @@ import type {
   ScorecardOcrHints,
 } from "./src/scorecardOcr";
 import type { ScorecardOcrResult } from "./modules";
+
+const appConfig = require("./app.json") as {
+  expo?: {
+    version?: string;
+    ios?: {
+      buildNumber?: string;
+    };
+  };
+};
 
 type Hole = {
   number: number;
@@ -104,6 +113,7 @@ type ScorecardReviewHoleDraft = {
   strokeIndex: string;
 };
 type ScorecardReviewDraft = {
+  requireCompleteImport: boolean;
   courseName: string;
   teeName: string;
   courseRating: string;
@@ -141,6 +151,12 @@ const SCORECARD_DIRECTORY_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}scorecards`
   : null;
 const DEFAULT_COURSE_NAME = "Default Course";
+const appVersionLabel = [
+  appConfig.expo?.version ? `Version ${appConfig.expo.version}` : null,
+  appConfig.expo?.ios?.buildNumber ? `Build ${appConfig.expo.ios.buildNumber}` : null,
+]
+  .filter((value): value is string => !!value)
+  .join(" • ");
 
 const colors = {
   bg: "#e3e7eb",
@@ -479,25 +495,93 @@ function normalizeCourse(holes?: Hole[], fallbackYardages?: number[]) {
   });
 }
 
+function teeDefinitionForId(teeId: string) {
+  return teeDefinitions.find((definition) => definition.id === teeId) ?? null;
+}
+
+function teeHasDefaultHoleScaffold(tee: TeeSet) {
+  const definition = teeDefinitionForId(tee.id);
+  if (!definition || tee.course.length !== defaultCourse.length) {
+    return false;
+  }
+
+  return tee.course.every((currentHole, index) => {
+    const scaffoldHole = defaultCourse[index];
+    return (
+      currentHole.number === scaffoldHole.number &&
+      currentHole.name === scaffoldHole.name &&
+      currentHole.par === scaffoldHole.par &&
+      currentHole.strokeIndex === scaffoldHole.strokeIndex &&
+      currentHole.yardage === definition.yardages[index]
+    );
+  });
+}
+
+function teeHasDefaultRatingScaffold(tee: TeeSet) {
+  const definition = teeDefinitionForId(tee.id);
+  return !!definition && tee.courseRating === definition.courseRating && tee.slopeRating === definition.slopeRating;
+}
+
+function summarizeMissingReviewFields(reviewDraft: ScorecardReviewDraft) {
+  return reviewDraft.holes.reduce(
+    (summary, hole) => ({
+      yardages: summary.yardages + (hole.yardage.trim() ? 0 : 1),
+      pars: summary.pars + (hole.par.trim() ? 0 : 1),
+      strokeIndexes: summary.strokeIndexes + (hole.strokeIndex.trim() ? 0 : 1),
+    }),
+    {
+      yardages: 0,
+      pars: 0,
+      strokeIndexes: 0,
+    },
+  );
+}
+
 function buildScorecardReviewDraft(
   courseName: string,
   selectedTee: TeeSet,
   nameSuggestions: ScorecardNameSuggestions,
   ocrHints: ScorecardOcrHints,
   holeSuggestions: ScorecardHoleSuggestions,
+  requireCompleteImport = false,
 ): ScorecardReviewDraft {
+  const seededDefaultCourse = teeHasDefaultHoleScaffold(selectedTee);
+  const seededDefaultRatings = teeHasDefaultRatingScaffold(selectedTee);
+  const fallbackCourseName =
+    requireCompleteImport || courseName.trim() === DEFAULT_COURSE_NAME ? "" : courseName;
+
   return {
-    courseName: nameSuggestions.courseNameCandidates[0] ?? courseName,
+    requireCompleteImport,
+    courseName: nameSuggestions.courseNameCandidates[0] ?? fallbackCourseName,
     teeName: nameSuggestions.teeNameCandidates[0] ?? selectedTee.name,
-    courseRating: ocrHints.courseRatingCandidates[0] ?? String(selectedTee.courseRating),
-    slopeRating: ocrHints.slopeRatingCandidates[0] ?? String(selectedTee.slopeRating),
+    courseRating:
+      ocrHints.courseRatingCandidates[0] ??
+      (requireCompleteImport || seededDefaultRatings ? "" : String(selectedTee.courseRating)),
+    slopeRating:
+      ocrHints.slopeRatingCandidates[0] ??
+      (requireCompleteImport || seededDefaultRatings ? "" : String(selectedTee.slopeRating)),
     holes: selectedTee.course.map((currentHole) => {
       const suggestion = holeSuggestions.holes.find((hole) => hole.number === currentHole.number);
       return {
         number: currentHole.number,
-        yardage: String(suggestion?.yardage ?? currentHole.yardage),
-        par: String(suggestion?.par ?? currentHole.par),
-        strokeIndex: String(suggestion?.strokeIndex ?? currentHole.strokeIndex),
+        yardage:
+          suggestion?.yardage != null
+            ? String(suggestion.yardage)
+            : requireCompleteImport || seededDefaultCourse
+              ? ""
+              : String(currentHole.yardage),
+        par:
+          suggestion?.par != null
+            ? String(suggestion.par)
+            : requireCompleteImport || seededDefaultCourse
+              ? ""
+              : String(currentHole.par),
+        strokeIndex:
+          suggestion?.strokeIndex != null
+            ? String(suggestion.strokeIndex)
+            : requireCompleteImport || seededDefaultCourse
+              ? ""
+              : String(currentHole.strokeIndex),
       };
     }),
   };
@@ -742,6 +826,31 @@ function groupRoundTotal(
     0,
   );
 }
+
+const TextInput = React.forwardRef<RNTextInput, React.ComponentProps<typeof RNTextInput>>(function AppTextInput(
+  { style, onFocus, onBlur, ...props },
+  ref,
+) {
+  const [isFocused, setIsFocused] = useState(false);
+
+  return (
+    <RNTextInput
+      ref={ref}
+      {...props}
+      style={[style, isFocused && styles.inputFocused]}
+      onFocus={(event) => {
+        setIsFocused(true);
+        onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        setIsFocused(false);
+        onBlur?.(event);
+      }}
+    />
+  );
+});
+
+TextInput.displayName = "AppTextInput";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("setup");
@@ -1066,6 +1175,16 @@ export default function App() {
   };
 
   const runScorecardOcr = async (imageUri: string) => {
+    const supportMessage = getScorecardOcrSupportMessage();
+    if (supportMessage) {
+      setScorecardOcrImageUri(imageUri);
+      setScorecardOcrStatus("error");
+      setScorecardOcrResult(null);
+      setScorecardOcrError(supportMessage);
+      Alert.alert("OCR unavailable", supportMessage);
+      return;
+    }
+
     setScorecardOcrImageUri(imageUri);
     setScorecardOcrStatus("running");
     setScorecardOcrResult(null);
@@ -1076,9 +1195,11 @@ export default function App() {
       setScorecardOcrResult(result);
       setScorecardOcrStatus("done");
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not read text from the scorecard photo.";
       setScorecardOcrResult(null);
       setScorecardOcrStatus("error");
-      setScorecardOcrError(error instanceof Error ? error.message : "Could not read text from the scorecard photo.");
+      setScorecardOcrError(message);
+      Alert.alert("OCR failed", message);
     }
   };
 
@@ -1090,6 +1211,7 @@ export default function App() {
         scorecardNameSuggestions,
         scorecardOcrHints,
         scorecardHoleSuggestions,
+        true,
       ),
     );
     setScorecardReviewVisible(true);
@@ -1097,6 +1219,39 @@ export default function App() {
 
   const applyScorecardReview = () => {
     if (!scorecardReviewDraft) {
+      return;
+    }
+
+    const seededDefaultCourse = teeHasDefaultHoleScaffold(selectedTee);
+    const seededDefaultRatings = teeHasDefaultRatingScaffold(selectedTee);
+    const missing = summarizeMissingReviewFields(scorecardReviewDraft);
+    const requiresCompleteImport = scorecardReviewDraft.requireCompleteImport;
+    const missingParts: string[] = [];
+
+    if ((requiresCompleteImport || round.courseName.trim() === DEFAULT_COURSE_NAME || !round.courseName.trim()) && !scorecardReviewDraft.courseName.trim()) {
+      missingParts.push("course name");
+    }
+    if ((requiresCompleteImport || seededDefaultRatings) && !scorecardReviewDraft.courseRating.trim()) {
+      missingParts.push("course rating");
+    }
+    if ((requiresCompleteImport || seededDefaultRatings) && !scorecardReviewDraft.slopeRating.trim()) {
+      missingParts.push("slope rating");
+    }
+    if ((requiresCompleteImport || seededDefaultCourse) && missing.yardages > 0) {
+      missingParts.push(`${missing.yardages} yardage${missing.yardages === 1 ? "" : "s"}`);
+    }
+    if ((requiresCompleteImport || seededDefaultCourse) && missing.pars > 0) {
+      missingParts.push(`${missing.pars} par value${missing.pars === 1 ? "" : "s"}`);
+    }
+    if ((requiresCompleteImport || seededDefaultCourse) && missing.strokeIndexes > 0) {
+      missingParts.push(`${missing.strokeIndexes} stroke index${missing.strokeIndexes === 1 ? "" : "es"}`);
+    }
+
+    if (missingParts.length > 0) {
+      Alert.alert(
+        "Finish OCR review",
+        `OCR has not confidently filled everything yet. Add ${missingParts.join(", ")} before applying this imported course.`,
+      );
       return;
     }
 
@@ -1248,11 +1403,20 @@ export default function App() {
     () => extractScorecardNameSuggestions(visibleScorecardOcrResult),
     [visibleScorecardOcrResult],
   );
-  const scorecardOcrHints = useMemo(() => extractScorecardOcrHints(visibleScorecardOcrResult), [visibleScorecardOcrResult]);
-  const scorecardHoleSuggestions = useMemo(
-    () => extractScorecardHoleSuggestions(visibleScorecardOcrResult),
-    [visibleScorecardOcrResult],
+  const scorecardOcrHints = useMemo(
+    () => extractScorecardOcrHints(visibleScorecardOcrResult, selectedTee.name),
+    [selectedTee.name, visibleScorecardOcrResult],
   );
+  const scorecardHoleSuggestions = useMemo(
+    () => extractScorecardHoleSuggestions(visibleScorecardOcrResult, selectedTee.name),
+    [selectedTee.name, visibleScorecardOcrResult],
+  );
+  const missingScorecardHoleNumbers = useMemo(() => {
+    const detectedHoleNumbers = new Set(scorecardHoleSuggestions.holes.map((hole) => hole.number));
+    return defaultCourse
+      .map((hole) => hole.number)
+      .filter((holeNumber) => !detectedHoleNumbers.has(holeNumber));
+  }, [scorecardHoleSuggestions.holes]);
   const scorecardSummary = !round.scorecardImageUri
     ? "No photo attached yet."
     : visibleScorecardOcrStatus === "running"
@@ -1281,7 +1445,7 @@ export default function App() {
       : `${round.players.length} player${round.players.length === 1 ? "" : "s"} across ${activeGroupCount} group${activeGroupCount === 1 ? "" : "s"}.`;
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
-  const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const inputRefs = useRef<Record<string, RNTextInput | null>>({});
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
   const playerEntryRowOffsets = useRef<Record<number, number>>({});
   const pendingGroupFocusKey = useRef<string | null>(null);
@@ -1627,6 +1791,7 @@ export default function App() {
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Create rollup</Text>
               <Text style={styles.sectionSubtitle}>Build the rollup, groups, and field before you log scores.</Text>
+              {appVersionLabel ? <Text style={styles.meta}>{appVersionLabel}</Text> : null}
             </View>
 
             <View style={styles.card}>
@@ -2124,6 +2289,9 @@ export default function App() {
                               <Text style={styles.meta}>
                                 {scorecardHoleSuggestions.holes.length} holes • {scorecardHoleSuggestions.yardageCount} yardages • {scorecardHoleSuggestions.parCount} pars • {scorecardHoleSuggestions.strokeIndexCount} stroke indexes
                               </Text>
+                              {missingScorecardHoleNumbers.length > 0 ? (
+                                <Text style={styles.meta}>Missing holes: {missingScorecardHoleNumbers.join(", ")}</Text>
+                              ) : null}
                             </View>
                             <View style={styles.cardHeaderActions}>
                               <Pressable onPress={openScorecardReview} style={styles.smallButton}>
@@ -3221,7 +3389,7 @@ export default function App() {
                   <View style={styles.modalTitleWrap}>
                     <Text style={styles.smallLabel}>OCR review</Text>
                     <Text style={styles.modalTitle}>Review scorecard import</Text>
-                    <Text style={styles.meta}>Check the course, tee, ratings, and all 18 holes before applying OCR data to {selectedTee.name}.</Text>
+                    <Text style={styles.meta}>Check the course, tee, ratings, and all 18 holes before applying OCR data to {selectedTee.name}. Blank fields mean OCR did not detect a confident value yet.</Text>
                   </View>
                   <Pressable onPress={() => setScorecardReviewVisible(false)} style={styles.modalCloseButton}>
                     <Text style={styles.secondaryText}>Close</Text>
@@ -3505,6 +3673,15 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.panel, borderRadius: 24, padding: 18, borderWidth: 1, borderColor: colors.border, gap: 12 },
   subCard: { backgroundColor: colors.pale, borderRadius: 18, padding: 14, gap: 10 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: colors.field, paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, color: colors.ink },
+  inputFocused: {
+    borderColor: colors.primaryStrong,
+    backgroundColor: "#f9fbfd",
+    shadowColor: colors.primaryStrong,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
   cardHeaderCopy: { flex: 1, gap: 4 },
   cardHeaderActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 8 },

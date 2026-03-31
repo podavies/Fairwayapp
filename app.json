@@ -26,7 +26,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.podavies.fairway",
-      "buildNumber": "21",
+      "buildNumber": "36",
       "config": {
         "usesNonExemptEncryption": false
       }
