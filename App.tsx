@@ -1407,6 +1407,10 @@ export default function App() {
     () => extractScorecardOcrHints(visibleScorecardOcrResult, selectedTee.name),
     [selectedTee.name, visibleScorecardOcrResult],
   );
+  const reviewScorecardOcrHints = useMemo(
+    () => extractScorecardOcrHints(visibleScorecardOcrResult, scorecardReviewDraft?.teeName || selectedTee.name),
+    [scorecardReviewDraft?.teeName, selectedTee.name, visibleScorecardOcrResult],
+  );
   const scorecardHoleSuggestions = useMemo(
     () => extractScorecardHoleSuggestions(visibleScorecardOcrResult, selectedTee.name),
     [selectedTee.name, visibleScorecardOcrResult],
@@ -3398,11 +3402,11 @@ export default function App() {
                 <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
                   {scorecardNameSuggestions.courseNameCandidates.length > 0 ||
                   scorecardNameSuggestions.teeNameCandidates.length > 0 ||
-                  scorecardOcrHints.courseRatingCandidates.length > 0 ||
-                  scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                  reviewScorecardOcrHints.courseRatingCandidates.length > 0 ||
+                  reviewScorecardOcrHints.slopeRatingCandidates.length > 0 ? (
                     <View style={styles.subCard}>
                       <Text style={styles.smallLabel}>Detected suggestions</Text>
-                      <Text style={styles.meta}>Tap any suggestion to drop it into the review fields.</Text>
+                      <Text style={styles.meta}>Tap any suggestion to drop it into the review fields. Tee suggestions also refresh tee-specific OCR values.</Text>
                       {scorecardNameSuggestions.courseNameCandidates.length > 0 ? (
                         <View style={styles.ocrHintGroup}>
                           <Text style={styles.smallLabel}>Course name</Text>
@@ -3426,7 +3430,30 @@ export default function App() {
                             {scorecardNameSuggestions.teeNameCandidates.map((value) => (
                               <Pressable
                                 key={`review-tee-name-${value}`}
-                                onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, teeName: value } : current))}
+                                onPress={() =>
+                                  setScorecardReviewDraft((current) => {
+                                    if (!current) {
+                                      return current;
+                                    }
+
+                                    const teeSpecificHints = extractScorecardOcrHints(visibleScorecardOcrResult, value);
+                                    const teeSpecificHoleSuggestions = extractScorecardHoleSuggestions(visibleScorecardOcrResult, value);
+                                    const nextDraft = buildScorecardReviewDraft(
+                                      current.courseName || round.courseName,
+                                      { ...selectedTee, name: value },
+                                      scorecardNameSuggestions,
+                                      teeSpecificHints,
+                                      teeSpecificHoleSuggestions,
+                                      current.requireCompleteImport,
+                                    );
+
+                                    return {
+                                      ...nextDraft,
+                                      courseName: current.courseName,
+                                      teeName: value,
+                                    };
+                                  })
+                                }
                                 style={styles.ocrHintChip}
                               >
                                 <Text style={styles.ocrHintText}>{value}</Text>
@@ -3435,11 +3462,11 @@ export default function App() {
                           </View>
                         </View>
                       ) : null}
-                      {scorecardOcrHints.courseRatingCandidates.length > 0 ? (
+                      {reviewScorecardOcrHints.courseRatingCandidates.length > 0 ? (
                         <View style={styles.ocrHintGroup}>
                           <Text style={styles.smallLabel}>Course rating</Text>
                           <View style={styles.ocrHintRow}>
-                            {scorecardOcrHints.courseRatingCandidates.map((value) => (
+                            {reviewScorecardOcrHints.courseRatingCandidates.map((value) => (
                               <Pressable
                                 key={`review-course-rating-${value}`}
                                 onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, courseRating: value } : current))}
@@ -3451,11 +3478,11 @@ export default function App() {
                           </View>
                         </View>
                       ) : null}
-                      {scorecardOcrHints.slopeRatingCandidates.length > 0 ? (
+                      {reviewScorecardOcrHints.slopeRatingCandidates.length > 0 ? (
                         <View style={styles.ocrHintGroup}>
                           <Text style={styles.smallLabel}>Slope</Text>
                           <View style={styles.ocrHintRow}>
-                            {scorecardOcrHints.slopeRatingCandidates.map((value) => (
+                            {reviewScorecardOcrHints.slopeRatingCandidates.map((value) => (
                               <Pressable
                                 key={`review-slope-${value}`}
                                 onPress={() => setScorecardReviewDraft((current) => (current ? { ...current, slopeRating: value } : current))}

@@ -7,8 +7,9 @@ Last updated: 31 March 2026
 - `1.5.3` is live on the iOS App Store.
 - `1.5.3` is now maintenance-only and should receive bug fixes only.
 - V2 is `2.0.0`.
-- `app.json` is currently set to iOS build `36` for the next OCR validation pass.
+- `app.json` is now set to iOS build `37` for the next bundled OCR validation pass.
 - Build `35` exposed an OCR regression where holes `2` and `11` were missing from the imported card.
+- Build `36` was used as the last TestFlight diagnosis target before the final bundled OCR fixes below.
 - V2 branch: `codex/2.0-carryover-fixes`
 - Latest GitHub-pushed V2 commit before this OCR batch: `37f15ff` (`chore: prepare v2 ios device testing`)
 
@@ -25,9 +26,10 @@ Last updated: 31 March 2026
 - Added `start:dev-client`, `build:ios:dev`, and `build:ios:preview` scripts.
 - Updated the iPhone test script to use `--dev-client` on port `8083`.
 - Updated TestFlight/device-testing notes.
-- Bumped the V2 iOS build number to `36`.
+- Bumped the V2 iOS build number to `37`.
 - Hardened scorecard OCR parsing for row-based, split-side, and bounded-cell OCR output.
 - Tightened the OCR review flow so incomplete imports do not silently keep scaffold defaults.
+- Added card-specific OCR handling for the shared white/yellow/red layout that also carries separate ladies ratings and ladies par overrides.
 
 ## TestFlight status
 
@@ -35,7 +37,7 @@ Last updated: 31 March 2026
 - Build ID for that earlier upload: `fc18a1df-5859-4e28-aa6b-ecb1afd0f7e2`
 - Submission ID for that earlier upload: `38ae1825-02a3-4199-882b-7b6fe10351fe`
 - Apple accepted that upload and began processing on 28 March 2026.
-- Current OCR regression-testing target is build `36`, because build `35` dropped holes `2` and `11`.
+- Current OCR regression-testing target is build `37`, bundling the fixes discovered after checking build `36`.
 
 ## Important rules from here
 
@@ -46,11 +48,12 @@ Last updated: 31 March 2026
 
 ## Best next steps on Monday
 
-1. Install and test V2 build `2.0.0 (36)` on a real iPhone.
+1. Install and test V2 build `2.0.0 (37)` on a real iPhone.
 2. Verify both scorecard photo import and live camera capture.
 3. Specifically confirm holes `2` and `11` now appear in the OCR import and review flow.
-4. Batch any further OCR fixes locally before requesting another cloud iOS build.
-5. Touch `1.5.3` only if a genuine production bug appears.
+4. Confirm the split-side card can distinguish `Yellow Men`, `Yellow Ladies`, and `Red Ladies`, including ladies par overrides on holes `5` and `14`.
+5. Batch any further OCR fixes locally before requesting another cloud iOS build.
+6. Touch `1.5.3` only if a genuine production bug appears.
 
 ## Useful commands
 

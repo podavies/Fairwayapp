@@ -40,14 +40,21 @@ type HoleSequenceMatch = {
   offset: number;
 };
 
+type TeeAudienceToken = "men" | "ladies";
+
 type OrderedRatingTriplet = {
   index: number;
   teeToken: string | null;
+  audienceToken: TeeAudienceToken | null;
   rating: string;
   slope: string;
 };
 
 type SplitSideTeeToken = "white" | "yellow" | "red";
+type SplitSideTeeSelection = {
+  teeToken: SplitSideTeeToken;
+  audienceToken: TeeAudienceToken | null;
+};
 
 type BoundedScorecardOcrLine = ScorecardOcrLine & {
   bounds: ScorecardOcrBounds;
@@ -229,9 +236,16 @@ function boundedRows(result: ScorecardOcrResult) {
   return clusterBoundedLinesIntoRows(lines);
 }
 
-function splitSideTeeToken(selectedTeeName?: string): SplitSideTeeToken | null {
+function splitSideTeeSelection(selectedTeeName?: string): SplitSideTeeSelection | null {
   const token = canonicalizeTeeName(selectedTeeName);
-  return token === "white" || token === "yellow" || token === "red" ? token : null;
+  if (token !== "white" && token !== "yellow" && token !== "red") {
+    return null;
+  }
+
+  return {
+    teeToken: token,
+    audienceToken: audienceTokenFromSelection(selectedTeeName),
+  };
 }
 
 function mergedParStrokeValue(value: number | undefined) {
@@ -256,10 +270,261 @@ function mergedParStrokeValue(value: number | undefined) {
   };
 }
 
+function dualParValue(value: number | undefined) {
+  if (value == null) {
+    return null;
+  }
+
+  const digits = `${value}`;
+  if (digits.length !== 2) {
+    return null;
+  }
+
+  const redPar = Number.parseInt(digits[0], 10);
+  const yellowLadiesPar = Number.parseInt(digits[1], 10);
+  if (!isParValue(redPar) || !isParValue(yellowLadiesPar)) {
+    return null;
+  }
+
+  return {
+    redPar,
+    yellowLadiesPar,
+  };
+}
+
+function altParStrokeValue(value: number | undefined) {
+  if (value == null) {
+    return null;
+  }
+
+  const digits = `${value}`;
+  if (digits.length !== 2) {
+    return null;
+  }
+
+  const par = Number.parseInt(digits[0], 10);
+  const strokeIndex = Number.parseInt(digits[1], 10);
+  if (!isParValue(par) || !isStrokeIndexValue(strokeIndex)) {
+    return null;
+  }
+
+  return {
+    par,
+    strokeIndex,
+  };
+}
+
+function audienceTokenFromLine(source: string): TeeAudienceToken | null {
+  const lower = source.toLowerCase();
+  if (/^\s*l\b/.test(lower) || /\b(?:ladies|lady|women|women's|womens)\b/.test(lower)) {
+    return "ladies";
+  }
+  if (/^\s*m\b/.test(lower) || /\b(?:men|men's|mens|gent|gents)\b/.test(lower)) {
+    return "men";
+  }
+  return null;
+}
+
+function audienceTokenFromSelection(source?: string | null): TeeAudienceToken | null {
+  const lower = source?.toLowerCase() ?? "";
+  if (/\b(?:ladies|lady|women|women's|womens)\b/.test(lower)) {
+    return "ladies";
+  }
+  if (/\b(?:men|men's|mens|gent|gents)\b/.test(lower)) {
+    return "men";
+  }
+  return null;
+}
+
+function orderedRatingTripletsFromSources(sources: string[], firstHoleRowIndex: number) {
+  const orderedRatingTriplets: OrderedRatingTriplet[] = [];
+
+  sources.forEach((source, index) => {
+    const normalizedSource = normalizeCandidate(source);
+    const lower = normalizedSource.toLowerCase();
+    const isPreTable = index >= 0 && index < (firstHoleRowIndex >= 0 ? firstHoleRowIndex : Math.min(sources.length, 6));
+
+    if (!isPreTable) {
+      return;
+    }
+
+    const orderedTripletMatch = normalizedSource.match(/(?:^|[A-Za-z]\s+)(\d{2})\s+(\d{2}\.\d)\s+(\d{2,3})(?:\b|$)/);
+    if (!orderedTripletMatch) {
+      return;
+    }
+
+    const par = Number.parseInt(orderedTripletMatch[1], 10);
+    const ratingValue = orderedTripletMatch[2];
+    const slopeValue = orderedTripletMatch[3];
+    const rating = Number.parseFloat(ratingValue);
+    const slope = Number.parseInt(slopeValue, 10);
+    const teeTokens = lineTeeTokens(lower);
+
+    if (
+      Number.isNaN(par) ||
+      par < 54 ||
+      par > 75 ||
+      Number.isNaN(rating) ||
+      rating < 55 ||
+      rating > 80 ||
+      Number.isNaN(slope) ||
+      slope < 55 ||
+      slope > 155
+    ) {
+      return;
+    }
+
+    orderedRatingTriplets.push({
+      index,
+      teeToken: teeTokens[0] ?? null,
+      audienceToken: audienceTokenFromLine(normalizedSource),
+      rating: ratingValue,
+      slope: slopeValue,
+    });
+  });
+
+  return orderedRatingTriplets;
+}
+
+function inferredSplitSideTeeNames(orderedRatingTriplets: OrderedRatingTriplet[]) {
+  if (
+    orderedRatingTriplets.length >= 4 &&
+    orderedRatingTriplets[0]?.audienceToken === "men" &&
+    orderedRatingTriplets[1]?.audienceToken === "men" &&
+    orderedRatingTriplets[2]?.audienceToken === "ladies" &&
+    orderedRatingTriplets[3]?.audienceToken === "ladies"
+  ) {
+    return ["White Men", "Yellow Men", "Yellow Ladies", "Red Ladies"];
+  }
+
+  if (
+    orderedRatingTriplets.length >= 3 &&
+    orderedRatingTriplets[0]?.audienceToken === "men" &&
+    orderedRatingTriplets[1]?.audienceToken === "men" &&
+    orderedRatingTriplets[2]?.audienceToken === "ladies"
+  ) {
+    return ["White Men", "Yellow Men", "Red Ladies"];
+  }
+
+  return [];
+}
+
+function pickOrderedRatingTriplet(
+  orderedRatingTriplets: OrderedRatingTriplet[],
+  selectedTeeToken: string | null,
+  selectedAudienceToken: TeeAudienceToken | null,
+) {
+  const explicitOrderedTriplet = orderedRatingTriplets.find(
+    (triplet) =>
+      triplet.teeToken &&
+      (!selectedTeeToken || triplet.teeToken === selectedTeeToken) &&
+      (!selectedAudienceToken || !triplet.audienceToken || triplet.audienceToken === selectedAudienceToken),
+  );
+
+  if (explicitOrderedTriplet) {
+    return explicitOrderedTriplet;
+  }
+
+  if (!selectedTeeToken || orderedRatingTriplets.length < 3) {
+    return null;
+  }
+
+  const orderedIndex =
+    selectedTeeToken === "white"
+      ? 0
+      : selectedTeeToken === "yellow"
+        ? selectedAudienceToken === "ladies" && orderedRatingTriplets.length >= 4
+          ? 2
+          : 1
+        : selectedTeeToken === "blue"
+          ? Math.min(2, orderedRatingTriplets.length - 1)
+          : orderedRatingTriplets.length - 1;
+
+  return orderedRatingTriplets[orderedIndex] ?? null;
+}
+
+function parseSplitSideRightBlock(values: number[]) {
+  const redYardage = values[0];
+  if (!isYardageValue(redYardage)) {
+    return {
+      rightRedYardage: null,
+      rightPar: null,
+      yellowLadiesPar: null,
+      rightStrokeIndex: null,
+    };
+  }
+
+  if (isParValue(values[1]) && isParValue(values[2]) && isStrokeIndexValue(values[3])) {
+    return {
+      rightRedYardage: redYardage,
+      rightPar: values[1],
+      yellowLadiesPar: values[2],
+      rightStrokeIndex: values[3],
+    };
+  }
+
+  const mergedDualPar = dualParValue(values[1]);
+  if (mergedDualPar && isStrokeIndexValue(values[2])) {
+    return {
+      rightRedYardage: redYardage,
+      rightPar: mergedDualPar.redPar,
+      yellowLadiesPar: mergedDualPar.yellowLadiesPar,
+      rightStrokeIndex: values[2],
+    };
+  }
+
+  if (isParValue(values[1])) {
+    const mergedAltParStroke = altParStrokeValue(values[2]);
+    if (mergedAltParStroke) {
+      return {
+        rightRedYardage: redYardage,
+        rightPar: values[1],
+        yellowLadiesPar: mergedAltParStroke.par,
+        rightStrokeIndex: mergedAltParStroke.strokeIndex,
+      };
+    }
+  }
+
+  if (isParValue(values[1]) && isStrokeIndexValue(values[2])) {
+    return {
+      rightRedYardage: redYardage,
+      rightPar: values[1],
+      yellowLadiesPar: values[1],
+      rightStrokeIndex: values[2],
+    };
+  }
+
+  if (isParValue(values[1])) {
+    return {
+      rightRedYardage: redYardage,
+      rightPar: values[1],
+      yellowLadiesPar: values[1],
+      rightStrokeIndex: values[1],
+    };
+  }
+
+  const mergedRightParStroke = mergedParStrokeValue(values[1]);
+  if (mergedRightParStroke) {
+    return {
+      rightRedYardage: redYardage,
+      rightPar: mergedRightParStroke.par,
+      yellowLadiesPar: mergedRightParStroke.par,
+      rightStrokeIndex: mergedRightParStroke.strokeIndex,
+    };
+  }
+
+  return {
+    rightRedYardage: null,
+    rightPar: null,
+    yellowLadiesPar: null,
+    rightStrokeIndex: null,
+  };
+}
+
 function parseSplitSideRowValues(
   holeNumber: number,
   rest: number[],
-  selectedTeeToken: SplitSideTeeToken,
+  selectedTeeSelection: SplitSideTeeSelection,
 ): ScorecardParsedHole | null {
   const leftWhiteYardage = rest[0];
   const leftYellowYardage = rest[1];
@@ -270,9 +535,6 @@ function parseSplitSideRowValues(
   let cursor = 2;
   let leftPar: number | null = null;
   let leftStrokeIndex: number | null = null;
-  let rightRedYardage: number | null = null;
-  let rightPar: number | null = null;
-  let rightStrokeIndex: number | null = null;
 
   if (leftBlockSupported && isParValue(rest[cursor])) {
     leftPar = rest[cursor];
@@ -293,43 +555,43 @@ function parseSplitSideRowValues(
     }
   }
 
-  if (isYardageValue(rest[cursor]) && isParValue(rest[cursor + 1])) {
-    rightRedYardage = rest[cursor];
-    rightPar = rest[cursor + 1];
-    if (isStrokeIndexValue(rest[cursor + 2])) {
-      rightStrokeIndex = rest[cursor + 2];
-    } else {
-      rightStrokeIndex = rightPar;
-    }
-  } else if (isYardageValue(rest[cursor]) && mergedParStrokeValue(rest[cursor + 1]) != null) {
-    rightRedYardage = rest[cursor];
-    rightPar = mergedParStrokeValue(rest[cursor + 1])?.par ?? null;
-    rightStrokeIndex = mergedParStrokeValue(rest[cursor + 1])?.strokeIndex ?? null;
-  } else if (isYardageValue(rest[0]) && isParValue(rest[1])) {
-    rightRedYardage = rest[0];
-    rightPar = rest[1];
-    rightStrokeIndex = isStrokeIndexValue(rest[2]) ? rest[2] : rightPar;
-  } else if (isYardageValue(rest[0]) && mergedParStrokeValue(rest[1]) != null) {
-    rightRedYardage = rest[0];
-    rightPar = mergedParStrokeValue(rest[1])?.par ?? null;
-    rightStrokeIndex = mergedParStrokeValue(rest[1])?.strokeIndex ?? null;
-  }
+  const parsedRightBlock = parseSplitSideRightBlock(rest.slice(cursor));
+  const fallbackRightBlock = parseSplitSideRightBlock(rest);
+  const rightRedYardage = parsedRightBlock.rightRedYardage ?? fallbackRightBlock.rightRedYardage;
+  const rightPar = parsedRightBlock.rightPar ?? fallbackRightBlock.rightPar;
+  const yellowLadiesPar = parsedRightBlock.yellowLadiesPar ?? fallbackRightBlock.yellowLadiesPar;
+  const rightStrokeIndex = parsedRightBlock.rightStrokeIndex ?? fallbackRightBlock.rightStrokeIndex;
 
-  return selectedTeeToken === "white" && leftBlockSupported && leftPar != null && leftStrokeIndex != null
+  return selectedTeeSelection.teeToken === "white" && leftBlockSupported && leftPar != null && leftStrokeIndex != null
     ? {
         number: holeNumber,
         yardage: leftWhiteYardage,
         par: leftPar,
         strokeIndex: leftStrokeIndex,
       }
-    : selectedTeeToken === "yellow" && leftBlockSupported && leftPar != null && leftStrokeIndex != null
+    : selectedTeeSelection.teeToken === "yellow" &&
+        selectedTeeSelection.audienceToken !== "ladies" &&
+        leftBlockSupported &&
+        leftPar != null &&
+        leftStrokeIndex != null
       ? {
           number: holeNumber,
           yardage: leftYellowYardage,
           par: leftPar,
           strokeIndex: leftStrokeIndex,
         }
-      : selectedTeeToken === "red" && rightRedYardage != null && rightPar != null && rightStrokeIndex != null
+      : selectedTeeSelection.teeToken === "yellow" &&
+          selectedTeeSelection.audienceToken === "ladies" &&
+          isYardageValue(leftYellowYardage) &&
+          rightPar != null &&
+          rightStrokeIndex != null
+        ? {
+            number: holeNumber,
+            yardage: leftYellowYardage,
+            par: yellowLadiesPar ?? rightPar,
+            strokeIndex: rightStrokeIndex,
+          }
+        : selectedTeeSelection.teeToken === "red" && rightRedYardage != null && rightPar != null && rightStrokeIndex != null
         ? {
             number: holeNumber,
             yardage: rightRedYardage,
@@ -561,6 +823,7 @@ function extractScorecardNameSuggestionsFromResult(result: ScorecardOcrResult): 
     .filter(Boolean);
   const firstHoleRowIndex = lines.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
   const preTableLines = lines.slice(0, firstHoleRowIndex >= 0 ? firstHoleRowIndex : Math.min(lines.length, 6));
+  const orderedRatingTriplets = orderedRatingTripletsFromSources(lines, firstHoleRowIndex);
 
   const courseNameCandidates = preTableLines
     .filter((line) => {
@@ -596,6 +859,8 @@ function extractScorecardNameSuggestionsFromResult(result: ScorecardOcrResult): 
     })
     .filter((line) => line.length >= 3 && !ignoredTeeNames.test(line));
 
+  teeNameCandidates.push(...inferredSplitSideTeeNames(orderedRatingTriplets));
+
   return {
     courseNameCandidates: uniqueValues(courseNameCandidates),
     teeNameCandidates: uniqueValues(teeNameCandidates),
@@ -624,7 +889,8 @@ function extractScorecardOcrHintsFromResult(result: ScorecardOcrResult, selected
   const sources = result.lines.map((line) => line.text);
   const firstHoleRowIndex = sources.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
   const selectedTeeToken = canonicalizeTeeName(selectedTeeName);
-  const orderedRatingTriplets: OrderedRatingTriplet[] = [];
+  const selectedAudienceToken = audienceTokenFromSelection(selectedTeeName);
+  const orderedRatingTriplets = orderedRatingTripletsFromSources(sources, firstHoleRowIndex);
 
   sources.forEach((source, index) => {
     const normalizedSource = normalizeCandidate(source);
@@ -672,61 +938,12 @@ function extractScorecardOcrHintsFromResult(result: ScorecardOcrResult, selected
         }
       }
     }
-
-    if (isPreTable) {
-      const orderedTripletMatch = normalizedSource.match(/(?:^|[A-Za-z]\s+)(\d{2})\s+(\d{2}\.\d)\s+(\d{2,3})(?:\b|$)/);
-      if (orderedTripletMatch) {
-        const par = Number.parseInt(orderedTripletMatch[1], 10);
-        const ratingValue = orderedTripletMatch[2];
-        const slopeValue = orderedTripletMatch[3];
-        const rating = Number.parseFloat(ratingValue);
-        const slope = Number.parseInt(slopeValue, 10);
-
-        if (
-          !Number.isNaN(par) &&
-          par >= 54 &&
-          par <= 75 &&
-          !Number.isNaN(rating) &&
-          rating >= 55 &&
-          rating <= 80 &&
-          !Number.isNaN(slope) &&
-          slope >= 55 &&
-          slope <= 155
-        ) {
-          orderedRatingTriplets.push({
-            index,
-            teeToken: teeTokens[0] ?? null,
-            rating: ratingValue,
-            slope: slopeValue,
-          });
-        }
-      }
-    }
   });
 
-  const explicitOrderedTriplet = orderedRatingTriplets.find(
-    (triplet) => triplet.teeToken && (!selectedTeeToken || triplet.teeToken === selectedTeeToken),
-  );
-  if (explicitOrderedTriplet) {
-    courseRatingCandidates.push(explicitOrderedTriplet.rating);
-    slopeRatingCandidates.push(explicitOrderedTriplet.slope);
-  }
-
-  if (!explicitOrderedTriplet && selectedTeeToken && orderedRatingTriplets.length >= 3) {
-    const orderedIndex =
-      selectedTeeToken === "white"
-        ? 0
-        : selectedTeeToken === "yellow"
-          ? 1
-          : selectedTeeToken === "blue"
-            ? Math.min(2, orderedRatingTriplets.length - 1)
-            : orderedRatingTriplets.length - 1;
-    const orderedTriplet = orderedRatingTriplets[orderedIndex];
-
-    if (orderedTriplet) {
-      courseRatingCandidates.push(orderedTriplet.rating);
-      slopeRatingCandidates.push(orderedTriplet.slope);
-    }
+  const orderedTriplet = pickOrderedRatingTriplet(orderedRatingTriplets, selectedTeeToken, selectedAudienceToken);
+  if (orderedTriplet) {
+    courseRatingCandidates.push(orderedTriplet.rating);
+    slopeRatingCandidates.push(orderedTriplet.slope);
   }
 
   return {
@@ -751,13 +968,13 @@ export function extractScorecardOcrHints(result: ScorecardOcrResult | null, sele
 }
 
 function extractBoundedSplitSideHoleSuggestions(result: ScorecardOcrResult, selectedTeeName?: string): ScorecardHoleSuggestions {
-  const selectedTeeToken = splitSideTeeToken(selectedTeeName);
-  if (!selectedTeeToken) {
+  const selectedTeeSelection = splitSideTeeSelection(selectedTeeName);
+  if (!selectedTeeSelection) {
     return {
       holes: [],
       yardageCount: 0,
       parCount: 0,
-      strokeIndexCount: 0,
+        strokeIndexCount: 0,
     };
   }
 
@@ -786,7 +1003,7 @@ function extractBoundedSplitSideHoleSuggestions(result: ScorecardOcrResult, sele
       return;
     }
 
-    const parsedHole = parseSplitSideRowValues(anchor.holeNumber, values.slice(holeIndex + 1), selectedTeeToken);
+    const parsedHole = parseSplitSideRowValues(anchor.holeNumber, values.slice(holeIndex + 1), selectedTeeSelection);
 
     if (parsedHole) {
       holeMap.set(anchor.holeNumber, parsedHole);
@@ -797,8 +1014,8 @@ function extractBoundedSplitSideHoleSuggestions(result: ScorecardOcrResult, sele
 }
 
 function extractSplitSideHoleSuggestions(result: ScorecardOcrResult, selectedTeeName?: string): ScorecardHoleSuggestions {
-  const selectedTeeToken = splitSideTeeToken(selectedTeeName);
-  if (!selectedTeeToken) {
+  const selectedTeeSelection = splitSideTeeSelection(selectedTeeName);
+  if (!selectedTeeSelection) {
     return {
       holes: [],
       yardageCount: 0,
@@ -821,7 +1038,7 @@ function extractSplitSideHoleSuggestions(result: ScorecardOcrResult, selectedTee
       return;
     }
 
-    const parsedHole = parseSplitSideRowValues(holeNumber, values.slice(1), selectedTeeToken);
+    const parsedHole = parseSplitSideRowValues(holeNumber, values.slice(1), selectedTeeSelection);
     if (parsedHole) {
       holeMap.set(holeNumber, parsedHole);
     }

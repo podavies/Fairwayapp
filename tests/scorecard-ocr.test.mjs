@@ -208,6 +208,60 @@ const splitSideScorecardResult = {
   ],
 };
 
+const fourVariantSplitSideScorecardResult = {
+  platform: "ios-vision",
+  fullText: [
+    "Different Club",
+    "M 70 71.1 132",
+    "M 70 69.8 127",
+    "L 75 76.1 136",
+    "L 73 73.6 132",
+    "1 360 353 4 16 346 4 13",
+    "2 413 401 4 4 360 5 9",
+    "3 173 163 3 18 161 3 15",
+    "4 517 499 5 12 466 5 6",
+    "5 428 416 4 2 351 4 5 4",
+    "6 201 187 3 8 160 3 11",
+    "7 346 337 4 14 295 4 17",
+    "8 395 386 4 6 377 4 1",
+    "9 371 344 4 10 338 4 7",
+    "10 174 157 3 15 128 3 18",
+    "11 556 538 5 5 502 5 2",
+    "12 434 427 4 1 417 5 5",
+    "13 153 144 3 17 134 3 12",
+    "14 426 409 4 3 362 4 5 3",
+    "15 320 306 4 11 280 4 14",
+    "16 506 491 5 9 456 5 8",
+    "17 185 177 3 13 167 3 16",
+    "18 435 423 4 7 414 5 10",
+  ].join("\n"),
+  lines: [
+    { text: "Different Club", confidence: 0.99, bounds: null, candidates: ["Different Club"] },
+    { text: "M 70 71.1 132", confidence: 0.94, bounds: null, candidates: ["M 70 71.1 132"] },
+    { text: "M 70 69.8 127", confidence: 0.94, bounds: null, candidates: ["M 70 69.8 127"] },
+    { text: "L 75 76.1 136", confidence: 0.94, bounds: null, candidates: ["L 75 76.1 136"] },
+    { text: "L 73 73.6 132", confidence: 0.94, bounds: null, candidates: ["L 73 73.6 132"] },
+    { text: "1 360 353 4 16 346 4 13", confidence: 0.92, bounds: null, candidates: ["1 360 353 4 16 346 4 13"] },
+    { text: "2 413 401 4 4 360 5 9", confidence: 0.92, bounds: null, candidates: ["2 413 401 4 4 360 5 9"] },
+    { text: "3 173 163 3 18 161 3 15", confidence: 0.92, bounds: null, candidates: ["3 173 163 3 18 161 3 15"] },
+    { text: "4 517 499 5 12 466 5 6", confidence: 0.92, bounds: null, candidates: ["4 517 499 5 12 466 5 6"] },
+    { text: "5 428 416 4 2 351 4 5 4", confidence: 0.92, bounds: null, candidates: ["5 428 416 4 2 351 4 5 4"] },
+    { text: "6 201 187 3 8 160 3 11", confidence: 0.92, bounds: null, candidates: ["6 201 187 3 8 160 3 11"] },
+    { text: "7 346 337 4 14 295 4 17", confidence: 0.92, bounds: null, candidates: ["7 346 337 4 14 295 4 17"] },
+    { text: "8 395 386 4 6 377 4 1", confidence: 0.92, bounds: null, candidates: ["8 395 386 4 6 377 4 1"] },
+    { text: "9 371 344 4 10 338 4 7", confidence: 0.92, bounds: null, candidates: ["9 371 344 4 10 338 4 7"] },
+    { text: "10 174 157 3 15 128 3 18", confidence: 0.92, bounds: null, candidates: ["10 174 157 3 15 128 3 18"] },
+    { text: "11 556 538 5 5 502 5 2", confidence: 0.92, bounds: null, candidates: ["11 556 538 5 5 502 5 2"] },
+    { text: "12 434 427 4 1 417 5 5", confidence: 0.92, bounds: null, candidates: ["12 434 427 4 1 417 5 5"] },
+    { text: "13 153 144 3 17 134 3 12", confidence: 0.92, bounds: null, candidates: ["13 153 144 3 17 134 3 12"] },
+    { text: "14 426 409 4 3 362 4 5 3", confidence: 0.92, bounds: null, candidates: ["14 426 409 4 3 362 4 5 3"] },
+    { text: "15 320 306 4 11 280 4 14", confidence: 0.92, bounds: null, candidates: ["15 320 306 4 11 280 4 14"] },
+    { text: "16 506 491 5 9 456 5 8", confidence: 0.92, bounds: null, candidates: ["16 506 491 5 9 456 5 8"] },
+    { text: "17 185 177 3 13 167 3 16", confidence: 0.92, bounds: null, candidates: ["17 185 177 3 13 167 3 16"] },
+    { text: "18 435 423 4 7 414 5 10", confidence: 0.92, bounds: null, candidates: ["18 435 423 4 7 414 5 10"] },
+  ],
+};
+
 const collapsedDuplicateSplitSideScorecardResult = {
   platform: "ios-vision",
   fullText: [
@@ -631,6 +685,57 @@ test("scorecard OCR maps split-side scorecards for yellow and red tees", () => {
     yardage: 414,
     par: 5,
     strokeIndex: 10,
+  });
+});
+
+test("scorecard OCR distinguishes men's and ladies tee variants on the same split-side card", () => {
+  const nameSuggestions = extractScorecardNameSuggestions(fourVariantSplitSideScorecardResult);
+  assert.deepEqual(nameSuggestions.teeNameCandidates, ["White Men", "Yellow Men", "Yellow Ladies", "Red Ladies"]);
+
+  assert.deepEqual(extractScorecardOcrHints(fourVariantSplitSideScorecardResult, "Yellow Men"), {
+    courseRatingCandidates: ["69.8"],
+    slopeRatingCandidates: ["127"],
+  });
+
+  assert.deepEqual(extractScorecardOcrHints(fourVariantSplitSideScorecardResult, "Yellow Ladies"), {
+    courseRatingCandidates: ["76.1"],
+    slopeRatingCandidates: ["136"],
+  });
+
+  const yellowMenParsed = extractScorecardHoleSuggestions(fourVariantSplitSideScorecardResult, "Yellow Men");
+  assert.equal(yellowMenParsed.holes.length, 18);
+  assert.deepEqual(yellowMenParsed.holes[1], {
+    number: 2,
+    yardage: 401,
+    par: 4,
+    strokeIndex: 4,
+  });
+
+  const yellowLadiesParsed = extractScorecardHoleSuggestions(fourVariantSplitSideScorecardResult, "Yellow Ladies");
+  assert.equal(yellowLadiesParsed.holes.length, 18);
+  assert.deepEqual(yellowLadiesParsed.holes[1], {
+    number: 2,
+    yardage: 401,
+    par: 5,
+    strokeIndex: 9,
+  });
+  assert.deepEqual(yellowLadiesParsed.holes[4], {
+    number: 5,
+    yardage: 416,
+    par: 5,
+    strokeIndex: 4,
+  });
+  assert.deepEqual(yellowLadiesParsed.holes[10], {
+    number: 11,
+    yardage: 538,
+    par: 5,
+    strokeIndex: 2,
+  });
+  assert.deepEqual(yellowLadiesParsed.holes[13], {
+    number: 14,
+    yardage: 409,
+    par: 5,
+    strokeIndex: 3,
   });
 });
 
