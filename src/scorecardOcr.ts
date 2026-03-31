@@ -4,11 +4,13 @@ import ScorecardOcrModule from "../modules";
 import type { ScorecardOcrResult } from "../modules";
 
 export {
+  extractScorecardAggregateTotals,
   extractScorecardHoleSuggestions,
   extractScorecardNameSuggestions,
   extractScorecardOcrHints,
 } from "./scorecardOcrParsing";
 export type {
+  ScorecardAggregateTotal,
   ScorecardHoleSuggestions,
   ScorecardNameSuggestions,
   ScorecardOcrHints,

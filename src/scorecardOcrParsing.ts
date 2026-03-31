@@ -24,6 +24,13 @@ export type ScorecardHoleSuggestions = {
   strokeIndexCount: number;
 };
 
+export type ScorecardAggregateTotal = {
+  label: "out" | "in" | "total";
+  holeNumbers: number[];
+  yardageTotal: number | null;
+  parTotal: number | null;
+};
+
 type NumericLine = {
   index: number;
   text: string;
@@ -56,11 +63,17 @@ type SplitSideTeeSelection = {
   audienceToken: TeeAudienceToken | null;
 };
 
+type SplitSideTotalsLabel = ScorecardAggregateTotal["label"];
+
+type ParsedHoleMetricKey = "yardage" | "par";
+
 type BoundedScorecardOcrLine = ScorecardOcrLine & {
   bounds: ScorecardOcrBounds;
 };
 
 const splitSideHoleAnchorMaxX = 0.34;
+const genericScorecardLabelPattern =
+  /\b(?:please indicate|competition|date|time|course handicap|handicap index|strokes?\s*rec'?d|distance markers?|player [a-d]\b|marker'?s score|player'?s score|review card|run again|view scorecard|remove photo|ocr preview|attach a scorecard|tap a detected value|blank fields mean|check the course|close)\b/i;
 const knownTeeWords = [
   "white",
   "yellow",
@@ -552,6 +565,16 @@ function parseSplitSideRowValues(
       leftPar = mergedLeftParStroke.par;
       leftStrokeIndex = mergedLeftParStroke.strokeIndex;
       cursor += 1;
+    } else if (
+      leftBlockSupported &&
+      isStrokeIndexValue(rest[cursor]) &&
+      isParValue(rest[cursor + 1]) &&
+      isYardageValue(rest[cursor + 2])
+    ) {
+      // OCR occasionally injects a stray stroke value before the left par cell.
+      // Keep the reliable par and let later repair logic recover the stroke index if needed.
+      leftPar = rest[cursor + 1];
+      cursor += 2;
     }
   }
 
@@ -562,43 +585,49 @@ function parseSplitSideRowValues(
   const yellowLadiesPar = parsedRightBlock.yellowLadiesPar ?? fallbackRightBlock.yellowLadiesPar;
   const rightStrokeIndex = parsedRightBlock.rightStrokeIndex ?? fallbackRightBlock.rightStrokeIndex;
 
-  return selectedTeeSelection.teeToken === "white" && leftBlockSupported && leftPar != null && leftStrokeIndex != null
-    ? {
-        number: holeNumber,
-        yardage: leftWhiteYardage,
-        par: leftPar,
-        strokeIndex: leftStrokeIndex,
-      }
+  return selectedTeeSelection.teeToken === "white" && leftBlockSupported
+    ? partialHoleSuggestion(
+        holeNumber,
+        isYardageValue(leftWhiteYardage) ? leftWhiteYardage : null,
+        leftPar,
+        leftStrokeIndex,
+      )
     : selectedTeeSelection.teeToken === "yellow" &&
         selectedTeeSelection.audienceToken !== "ladies" &&
-        leftBlockSupported &&
-        leftPar != null &&
-        leftStrokeIndex != null
-      ? {
-          number: holeNumber,
-          yardage: leftYellowYardage,
-          par: leftPar,
-          strokeIndex: leftStrokeIndex,
-        }
+        leftBlockSupported
+      ? partialHoleSuggestion(
+          holeNumber,
+          isYardageValue(leftYellowYardage) ? leftYellowYardage : null,
+          leftPar,
+          leftStrokeIndex,
+        )
       : selectedTeeSelection.teeToken === "yellow" &&
-          selectedTeeSelection.audienceToken === "ladies" &&
-          isYardageValue(leftYellowYardage) &&
-          rightPar != null &&
-          rightStrokeIndex != null
-        ? {
-            number: holeNumber,
-            yardage: leftYellowYardage,
-            par: yellowLadiesPar ?? rightPar,
-            strokeIndex: rightStrokeIndex,
-          }
-        : selectedTeeSelection.teeToken === "red" && rightRedYardage != null && rightPar != null && rightStrokeIndex != null
-        ? {
-            number: holeNumber,
-            yardage: rightRedYardage,
-            par: rightPar,
-            strokeIndex: rightStrokeIndex,
-          }
+          selectedTeeSelection.audienceToken === "ladies"
+        ? partialHoleSuggestion(
+            holeNumber,
+            isYardageValue(leftYellowYardage) ? leftYellowYardage : null,
+            yellowLadiesPar ?? rightPar,
+            rightStrokeIndex,
+          )
+        : selectedTeeSelection.teeToken === "red"
+        ? partialHoleSuggestion(holeNumber, rightRedYardage, rightPar, rightStrokeIndex)
         : null;
+}
+
+function partialHoleSuggestion(
+  holeNumber: number,
+  yardage: number | null,
+  par: number | null,
+  strokeIndex: number | null,
+): ScorecardParsedHole | null {
+  return yardage == null && par == null && strokeIndex == null
+    ? null
+    : {
+        number: holeNumber,
+        yardage,
+        par,
+        strokeIndex,
+      };
 }
 
 function uniqueValues(values: string[]) {
@@ -617,6 +646,313 @@ function extractIntegers(source: string) {
 
 function distinctCount(values: number[]) {
   return new Set(values).size;
+}
+
+function emptyHole(number: number): ScorecardParsedHole {
+  return {
+    number,
+    yardage: null,
+    par: null,
+    strokeIndex: null,
+  };
+}
+
+function isAggregateYardageValue(value: number | undefined, holeCount: number) {
+  return value != null && value >= holeCount * 50 && value <= holeCount * 700;
+}
+
+function isAggregateParValue(value: number | undefined, holeCount: number) {
+  return value != null && value >= holeCount * 3 && value <= holeCount * 6;
+}
+
+function holeNumbersForTotalsLabel(label: SplitSideTotalsLabel) {
+  return label === "out"
+    ? Array.from({ length: 9 }, (_, index) => index + 1)
+    : label === "in"
+      ? Array.from({ length: 9 }, (_, index) => index + 10)
+      : Array.from({ length: 18 }, (_, index) => index + 1);
+}
+
+function parseSplitSideTotalsRow(source: string, selectedTeeSelection: SplitSideTeeSelection): ScorecardAggregateTotal | null {
+  const normalized = normalizeCandidate(source);
+  const labelMatch = normalized.match(/\b(out|in|total)\b/i);
+  if (!labelMatch) {
+    return null;
+  }
+
+  const label = labelMatch[1].toLowerCase() as SplitSideTotalsLabel;
+  const holeNumbers = holeNumbersForTotalsLabel(label);
+  const holeCount = holeNumbers.length;
+  const values = extractIntegers(normalized);
+  if (!values.length) {
+    return null;
+  }
+
+  const leftWhiteYardageTotal = isAggregateYardageValue(values[0], holeCount) ? values[0] : null;
+  const leftYellowYardageTotal = isAggregateYardageValue(values[1], holeCount) ? values[1] : null;
+  const leftParTotal = isAggregateParValue(values[2], holeCount) ? values[2] : null;
+  const rightRedYardageTotal = isAggregateYardageValue(values[3], holeCount) ? values[3] : null;
+  const rightParTotal = isAggregateParValue(values[4], holeCount) ? values[4] : null;
+  const yellowLadiesParTotal = isAggregateParValue(values[5], holeCount) ? values[5] : rightParTotal;
+
+  const yardageTotal =
+    selectedTeeSelection.teeToken === "white"
+      ? leftWhiteYardageTotal
+      : selectedTeeSelection.teeToken === "yellow"
+        ? leftYellowYardageTotal
+        : rightRedYardageTotal;
+  const parTotal =
+    selectedTeeSelection.teeToken === "red"
+      ? rightParTotal
+      : selectedTeeSelection.teeToken === "yellow" && selectedTeeSelection.audienceToken === "ladies"
+        ? yellowLadiesParTotal
+        : leftParTotal;
+
+  if (yardageTotal == null && parTotal == null) {
+    return null;
+  }
+
+  return {
+    label,
+    holeNumbers,
+    yardageTotal,
+    parTotal,
+  };
+}
+
+function splitSideTotalsFromResult(result: ScorecardOcrResult, selectedTeeSelection: SplitSideTeeSelection) {
+  const totalsByLabel = new Map<SplitSideTotalsLabel, ScorecardAggregateTotal>();
+
+  result.lines.forEach((line) => {
+    const parsed = parseSplitSideTotalsRow(line.text, selectedTeeSelection);
+    if (!parsed) {
+      return;
+    }
+
+    const current = totalsByLabel.get(parsed.label);
+    const parsedScore = Number(parsed.yardageTotal != null) + Number(parsed.parTotal != null);
+    const currentScore = current ? Number(current.yardageTotal != null) + Number(current.parTotal != null) : -1;
+    if (!current || parsedScore > currentScore) {
+      totalsByLabel.set(parsed.label, parsed);
+    }
+  });
+
+  return [...totalsByLabel.values()];
+}
+
+export function extractScorecardAggregateTotals(result: ScorecardOcrResult | null, selectedTeeName?: string): ScorecardAggregateTotal[] {
+  if (!result) {
+    return [];
+  }
+
+  const selectedTeeSelection = splitSideTeeSelection(selectedTeeName);
+  if (!selectedTeeSelection) {
+    return [];
+  }
+
+  const totalsByLabel = new Map<SplitSideTotalsLabel, ScorecardAggregateTotal>();
+  candidateResults(result)
+    .flatMap((candidate) => splitSideTotalsFromResult(candidate, selectedTeeSelection))
+    .forEach((total) => {
+      const current = totalsByLabel.get(total.label);
+      const totalScore = Number(total.yardageTotal != null) + Number(total.parTotal != null);
+      const currentScore = current ? Number(current.yardageTotal != null) + Number(current.parTotal != null) : -1;
+      if (!current || totalScore > currentScore) {
+        totalsByLabel.set(total.label, total);
+      }
+    });
+
+  return (["out", "in", "total"] as const)
+    .map((label) => totalsByLabel.get(label))
+    .filter((total): total is ScorecardAggregateTotal => total != null);
+}
+
+function metricValueIsPlausible(metric: ParsedHoleMetricKey, value: number) {
+  return metric === "yardage" ? isYardageValue(value) : isParValue(value);
+}
+
+function repairMissingAggregateValue(
+  holeMap: Map<number, ScorecardParsedHole>,
+  holeNumbers: number[],
+  metric: ParsedHoleMetricKey,
+  total: number | null,
+) {
+  if (total == null) {
+    return;
+  }
+
+  const sideHoles = holeNumbers.map((number) => holeMap.get(number) ?? emptyHole(number));
+  const missing = sideHoles.filter((hole) => hole[metric] == null);
+  if (missing.length !== 1) {
+    return;
+  }
+
+  const knownSum = sideHoles.reduce((sum, hole) => sum + (hole[metric] ?? 0), 0);
+  const candidateValue = total - knownSum;
+  if (!metricValueIsPlausible(metric, candidateValue)) {
+    return;
+  }
+
+  const targetHole = missing[0];
+  holeMap.set(targetHole.number, {
+    ...targetHole,
+    [metric]: candidateValue,
+  });
+}
+
+function dominantStrokeParity(sideHoles: ScorecardParsedHole[]) {
+  const values = sideHoles
+    .map((hole) => hole.strokeIndex)
+    .filter((value): value is number => value != null);
+  if (!values.length) {
+    return null;
+  }
+
+  const evenCount = values.filter((value) => value % 2 === 0).length;
+  const oddCount = values.length - evenCount;
+  const majorityCount = Math.max(evenCount, oddCount);
+  return majorityCount >= sideHoles.length - 2 ? (evenCount >= oddCount ? 0 : 1) : null;
+}
+
+function suspiciousStrokeRepairHoles(sideHoles: ScorecardParsedHole[]) {
+  const frequencies = new Map<number, number>();
+  sideHoles.forEach((hole) => {
+    if (hole.strokeIndex != null) {
+      frequencies.set(hole.strokeIndex, (frequencies.get(hole.strokeIndex) ?? 0) + 1);
+    }
+  });
+
+  const expectedParity = dominantStrokeParity(sideHoles);
+  return sideHoles.filter(
+    (hole) =>
+      hole.strokeIndex != null &&
+      ((frequencies.get(hole.strokeIndex) ?? 0) > 1 ||
+        (expectedParity !== null && hole.strokeIndex % 2 !== expectedParity)),
+  );
+}
+
+function repairAggregateMismatchFromStrokeOutlier(
+  holeMap: Map<number, ScorecardParsedHole>,
+  holeNumbers: number[],
+  metric: ParsedHoleMetricKey,
+  total: number | null,
+) {
+  if (total == null) {
+    return;
+  }
+
+  const sideHoles = holeNumbers.map((number) => holeMap.get(number) ?? emptyHole(number));
+  if (sideHoles.some((hole) => hole[metric] == null)) {
+    return;
+  }
+
+  const delta = total - sideHoles.reduce((sum, hole) => sum + (hole[metric] ?? 0), 0);
+  if (delta === 0) {
+    return;
+  }
+
+  const suspiciousHoles = suspiciousStrokeRepairHoles(sideHoles);
+  if (suspiciousHoles.length !== 1) {
+    return;
+  }
+
+  const targetHole = suspiciousHoles[0];
+  const currentValue = targetHole[metric];
+  if (currentValue == null) {
+    return;
+  }
+
+  const repairedValue = currentValue + delta;
+  if (!metricValueIsPlausible(metric, repairedValue)) {
+    return;
+  }
+
+  holeMap.set(targetHole.number, {
+    ...targetHole,
+    [metric]: repairedValue,
+  });
+}
+
+function repairParityStrokeIndexes(holeMap: Map<number, ScorecardParsedHole>, holeNumbers: number[]) {
+  const sideHoles = holeNumbers.map((number) => holeMap.get(number) ?? emptyHole(number));
+  const expectedParity = dominantStrokeParity(sideHoles);
+  if (expectedParity == null) {
+    return;
+  }
+
+  const frequencies = new Map<number, number>();
+  sideHoles.forEach((hole) => {
+    if (hole.strokeIndex != null) {
+      frequencies.set(hole.strokeIndex, (frequencies.get(hole.strokeIndex) ?? 0) + 1);
+    }
+  });
+
+  const expectedValues = Array.from({ length: 9 }, (_, index) => (expectedParity === 0 ? (index + 1) * 2 : index * 2 + 1));
+  const presentValues = new Set(
+    sideHoles
+      .map((hole) => hole.strokeIndex)
+      .filter((value): value is number => value != null && value % 2 === expectedParity && (frequencies.get(value) ?? 0) === 1),
+  );
+  const missingValues = expectedValues.filter((value) => !presentValues.has(value));
+  const candidateHoles = sideHoles
+    .filter(
+      (hole) =>
+        hole.strokeIndex == null ||
+        hole.strokeIndex % 2 !== expectedParity ||
+        (hole.strokeIndex != null && (frequencies.get(hole.strokeIndex) ?? 0) > 1),
+    )
+    .sort((a, b) => a.number - b.number);
+
+  if (candidateHoles.length !== missingValues.length) {
+    return;
+  }
+
+  candidateHoles.forEach((hole, index) => {
+    holeMap.set(hole.number, {
+      ...hole,
+      strokeIndex: missingValues[index] ?? hole.strokeIndex,
+    });
+  });
+}
+
+function repairSplitSideSuggestionsFromTotals(
+  result: ScorecardOcrResult,
+  suggestions: ScorecardHoleSuggestions,
+  selectedTeeName?: string,
+) {
+  const selectedTeeSelection = splitSideTeeSelection(selectedTeeName);
+  if (!selectedTeeSelection) {
+    return suggestions;
+  }
+
+  const totals = splitSideTotalsFromResult(result, selectedTeeSelection);
+  if (!totals.length) {
+    return suggestions;
+  }
+
+  const holeMap = new Map<number, ScorecardParsedHole>(suggestions.holes.map((hole) => [hole.number, { ...hole }]));
+
+  totals.forEach((total) => {
+    total.holeNumbers.forEach((number) => {
+      if (!holeMap.has(number)) {
+        holeMap.set(number, emptyHole(number));
+      }
+    });
+    repairMissingAggregateValue(holeMap, total.holeNumbers, "yardage", total.yardageTotal);
+    repairMissingAggregateValue(holeMap, total.holeNumbers, "par", total.parTotal);
+  });
+
+  totals.forEach((total) => {
+    repairAggregateMismatchFromStrokeOutlier(holeMap, total.holeNumbers, "yardage", total.yardageTotal);
+    repairAggregateMismatchFromStrokeOutlier(holeMap, total.holeNumbers, "par", total.parTotal);
+  });
+
+  if (selectedTeeSelection.teeToken === "white" || (selectedTeeSelection.teeToken === "yellow" && selectedTeeSelection.audienceToken !== "ladies")) {
+    repairParityStrokeIndexes(holeMap, holeNumbersForTotalsLabel("out"));
+    repairParityStrokeIndexes(holeMap, holeNumbersForTotalsLabel("in"));
+  }
+
+  return summarizeHoleSuggestions([...holeMap.values()]);
 }
 
 function summarizeHoleSuggestions(holes: ScorecardParsedHole[]): ScorecardHoleSuggestions {
@@ -682,6 +1018,21 @@ function isYardageValue(value: number | undefined) {
 
 function contiguousHoleSequence(values: number[]) {
   return matchHoleSequence(values)?.holeNumbers ?? null;
+}
+
+function looksLikeIndividualHoleRow(source: string) {
+  const values = extractIntegers(source);
+  const holeNumber = values[0];
+  return holeNumber != null && holeNumber >= 1 && holeNumber <= 18 && values.length >= 4;
+}
+
+function firstScorecardTableLineIndex(lines: string[]) {
+  const contiguousIndex = lines.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
+  if (contiguousIndex >= 0) {
+    return contiguousIndex;
+  }
+
+  return lines.findIndex((line) => looksLikeIndividualHoleRow(line));
 }
 
 function matchHoleSequence(values: number[]): HoleSequenceMatch | null {
@@ -821,7 +1172,7 @@ function extractScorecardNameSuggestionsFromResult(result: ScorecardOcrResult): 
   const lines = result.lines
     .map((line) => normalizeCandidate(line.text))
     .filter(Boolean);
-  const firstHoleRowIndex = lines.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
+  const firstHoleRowIndex = firstScorecardTableLineIndex(lines);
   const preTableLines = lines.slice(0, firstHoleRowIndex >= 0 ? firstHoleRowIndex : Math.min(lines.length, 6));
   const orderedRatingTriplets = orderedRatingTripletsFromSources(lines, firstHoleRowIndex);
 
@@ -832,7 +1183,9 @@ function extractScorecardNameSuggestionsFromResult(result: ScorecardOcrResult): 
       return (
         /[a-z]/i.test(line) &&
         digitCount <= 1 &&
-        !/\b(?:course\s*rating|c\/?r|cr|slope|par|stroke|index|yard|yards?|holes?|out|in|total)\b/i.test(lower)
+        !/\b(?:course\s*rating|c\/?r|cr|slope|par|stroke|index|yard|yards?|holes?|out|in|total)\b/i.test(lower) &&
+        !genericScorecardLabelPattern.test(lower) &&
+        !/^(?:competition|date|time|course|player [a-d])$/i.test(line)
       );
     })
     .map((line) => normalizeCandidate(line))
@@ -846,7 +1199,15 @@ function extractScorecardNameSuggestionsFromResult(result: ScorecardOcrResult): 
 
       const prefixMatch = line.match(/^\s*([A-Za-z][A-Za-z &/-]{1,24}?)(?=\s+(?:tee\b|c\/?r\b|cr\b|course\b|rating\b|slope\b|\d))/i);
       if (prefixMatch?.[1]) {
-        matches.push(normalizeCandidate(prefixMatch[1]));
+        const candidate = normalizeCandidate(prefixMatch[1]);
+        const hasTeeSignal =
+          /\d/.test(line) ||
+          /(course\s*rating|c\/?r|cr|slope|rating)/i.test(lower) ||
+          lineTeeTokens(candidate.toLowerCase()).length > 0 ||
+          audienceTokenFromSelection(candidate) !== null;
+        if (hasTeeSignal && !genericScorecardLabelPattern.test(candidate.toLowerCase())) {
+          matches.push(candidate);
+        }
       }
 
       knownTeeWords.forEach((word) => {
@@ -887,7 +1248,7 @@ function extractScorecardOcrHintsFromResult(result: ScorecardOcrResult, selected
   const courseRatingCandidates: string[] = [];
   const slopeRatingCandidates: string[] = [];
   const sources = result.lines.map((line) => line.text);
-  const firstHoleRowIndex = sources.findIndex((line) => contiguousHoleSequence(extractIntegers(line)));
+  const firstHoleRowIndex = firstScorecardTableLineIndex(sources);
   const selectedTeeToken = canonicalizeTeeName(selectedTeeName);
   const selectedAudienceToken = audienceTokenFromSelection(selectedTeeName);
   const orderedRatingTriplets = orderedRatingTripletsFromSources(sources, firstHoleRowIndex);
@@ -1201,8 +1562,10 @@ function extractScorecardHoleSuggestionsFromResult(result: ScorecardOcrResult, s
     columnRowSuggestions,
     numericSequenceSuggestions,
   );
+  const repairedSuggestions = repairSplitSideSuggestionsFromTotals(result, mergedSuggestions, selectedTeeName);
 
   return [
+    repairedSuggestions,
     mergedSuggestions,
     boundedSplitSideSuggestions,
     splitSideSuggestions,
@@ -1217,11 +1580,19 @@ function extractScorecardHoleSuggestionsFromResult(result: ScorecardOcrResult, s
 }
 
 function compareHoleSuggestionQuality(a: ScorecardHoleSuggestions, b: ScorecardHoleSuggestions) {
+  const duplicateStrokePenalty = (suggestion: ScorecardHoleSuggestions) => {
+    const strokeIndexes = suggestion.holes
+      .map((hole) => hole.strokeIndex)
+      .filter((value): value is number => value != null);
+    return strokeIndexes.length - new Set(strokeIndexes).size;
+  };
+
   return (
     b.holes.length - a.holes.length ||
     b.yardageCount - a.yardageCount ||
     b.parCount - a.parCount ||
-    b.strokeIndexCount - a.strokeIndexCount
+    b.strokeIndexCount - a.strokeIndexCount ||
+    duplicateStrokePenalty(a) - duplicateStrokePenalty(b)
   );
 }
 
@@ -1239,8 +1610,9 @@ export function extractScorecardHoleSuggestions(result: ScorecardOcrResult | nul
     .map((candidate) => extractScorecardHoleSuggestionsFromResult(candidate, selectedTeeName))
     .sort(compareHoleSuggestionQuality);
   const mergedSuggestions = mergeHoleSuggestions(...suggestions);
+  const repairedSuggestions = repairSplitSideSuggestionsFromTotals(result, mergedSuggestions, selectedTeeName);
 
-  return [mergedSuggestions, ...suggestions].sort(compareHoleSuggestionQuality)[0] ?? {
+  return [repairedSuggestions, mergedSuggestions, ...suggestions].sort(compareHoleSuggestionQuality)[0] ?? {
     holes: [],
     yardageCount: 0,
     parCount: 0,

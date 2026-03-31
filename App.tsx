@@ -32,6 +32,7 @@ import {
   totalPoints as calculateTotalPoints,
 } from "./src/scoring";
 import {
+  extractScorecardAggregateTotals,
   extractScorecardHoleSuggestions,
   extractScorecardNameSuggestions,
   extractScorecardOcrHints,
@@ -39,6 +40,7 @@ import {
   recognizeScorecardTextAsync,
 } from "./src/scorecardOcr";
 import type {
+  ScorecardAggregateTotal,
   ScorecardHoleSuggestions,
   ScorecardNameSuggestions,
   ScorecardOcrHints,
@@ -119,6 +121,20 @@ type ScorecardReviewDraft = {
   courseRating: string;
   slopeRating: string;
   holes: ScorecardReviewHoleDraft[];
+};
+type ScorecardReviewAggregateCheck = {
+  label: string;
+  expectedYardage: number | null;
+  actualYardage: number | null;
+  expectedPar: number | null;
+  actualPar: number | null;
+};
+type ScorecardReviewAnalysis = {
+  missingParts: string[];
+  blockingIssues: string[];
+  warningIssues: string[];
+  infoIssues: string[];
+  aggregateChecks: ScorecardReviewAggregateCheck[];
 };
 type LiveSection = "groups" | "players" | "entry";
 type SetupSection = "scorecard" | "courseLibrary" | "groups" | "field";
@@ -535,6 +551,172 @@ function summarizeMissingReviewFields(reviewDraft: ScorecardReviewDraft) {
       strokeIndexes: 0,
     },
   );
+}
+
+function parseReviewInteger(value: string) {
+  const digits = value.replace(/[^0-9]/g, "");
+  if (!digits) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(digits, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function parseReviewDecimal(value: string) {
+  const sanitized = value.replace(/[^0-9.]/g, "");
+  if (!sanitized) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(sanitized);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function summarizeMissingReviewRequirementParts(
+  reviewDraft: ScorecardReviewDraft,
+  selectedTee: TeeSet,
+  currentCourseName: string,
+) {
+  const seededDefaultCourse = teeHasDefaultHoleScaffold(selectedTee);
+  const seededDefaultRatings = teeHasDefaultRatingScaffold(selectedTee);
+  const missing = summarizeMissingReviewFields(reviewDraft);
+  const requiresCompleteImport = reviewDraft.requireCompleteImport;
+  const missingParts: string[] = [];
+
+  if ((requiresCompleteImport || currentCourseName.trim() === DEFAULT_COURSE_NAME || !currentCourseName.trim()) && !reviewDraft.courseName.trim()) {
+    missingParts.push("course name");
+  }
+  if ((requiresCompleteImport || seededDefaultRatings) && !reviewDraft.courseRating.trim()) {
+    missingParts.push("course rating");
+  }
+  if ((requiresCompleteImport || seededDefaultRatings) && !reviewDraft.slopeRating.trim()) {
+    missingParts.push("slope rating");
+  }
+  if ((requiresCompleteImport || seededDefaultCourse) && missing.yardages > 0) {
+    missingParts.push(`${missing.yardages} yardage${missing.yardages === 1 ? "" : "s"}`);
+  }
+  if ((requiresCompleteImport || seededDefaultCourse) && missing.pars > 0) {
+    missingParts.push(`${missing.pars} par value${missing.pars === 1 ? "" : "s"}`);
+  }
+  if ((requiresCompleteImport || seededDefaultCourse) && missing.strokeIndexes > 0) {
+    missingParts.push(`${missing.strokeIndexes} stroke index${missing.strokeIndexes === 1 ? "" : "es"}`);
+  }
+
+  return missingParts;
+}
+
+function analyzeScorecardReviewDraft(
+  reviewDraft: ScorecardReviewDraft | null,
+  selectedTee: TeeSet,
+  currentCourseName: string,
+  aggregateTotals: ScorecardAggregateTotal[],
+): ScorecardReviewAnalysis {
+  if (!reviewDraft) {
+    return {
+      missingParts: [],
+      blockingIssues: [],
+      warningIssues: [],
+      infoIssues: [],
+      aggregateChecks: [],
+    };
+  }
+
+  const missingParts = summarizeMissingReviewRequirementParts(reviewDraft, selectedTee, currentCourseName);
+  const blockingIssues: string[] = [];
+  const warningIssues: string[] = [];
+  const infoIssues: string[] = [];
+  const parsedHoles = reviewDraft.holes.map((hole) => ({
+    number: hole.number,
+    yardage: parseReviewInteger(hole.yardage),
+    par: parseReviewInteger(hole.par),
+    strokeIndex: parseReviewInteger(hole.strokeIndex),
+  }));
+
+  const courseRating = parseReviewDecimal(reviewDraft.courseRating);
+  if (reviewDraft.courseRating.trim() && (courseRating == null || courseRating < 55 || courseRating > 80)) {
+    blockingIssues.push(`Course rating ${reviewDraft.courseRating.trim()} looks invalid.`);
+  }
+
+  const slopeRating = parseReviewInteger(reviewDraft.slopeRating);
+  if (reviewDraft.slopeRating.trim() && (slopeRating == null || slopeRating < 55 || slopeRating > 155)) {
+    blockingIssues.push(`Slope rating ${reviewDraft.slopeRating.trim()} looks invalid.`);
+  }
+
+  parsedHoles.forEach((hole) => {
+    if (hole.yardage != null && (hole.yardage < 50 || hole.yardage > 700)) {
+      blockingIssues.push(`Hole ${hole.number} yardage ${hole.yardage} looks invalid.`);
+    }
+    if (hole.par != null && (hole.par < 3 || hole.par > 6)) {
+      blockingIssues.push(`Hole ${hole.number} par ${hole.par} looks invalid.`);
+    }
+    if (hole.strokeIndex != null && (hole.strokeIndex < 1 || hole.strokeIndex > 18)) {
+      blockingIssues.push(`Hole ${hole.number} SI ${hole.strokeIndex} looks invalid.`);
+    }
+  });
+
+  const strokeIndexes = parsedHoles
+    .map((hole) => hole.strokeIndex)
+    .filter((value): value is number => value != null);
+  const uniqueStrokeIndexes = new Set(strokeIndexes);
+  const duplicateStrokeIndexes = [...new Set(strokeIndexes.filter((value, index) => strokeIndexes.indexOf(value) !== index))].sort((a, b) => a - b);
+  if (duplicateStrokeIndexes.length > 0) {
+    warningIssues.push(`Stroke indexes repeat: ${duplicateStrokeIndexes.join(", ")}.`);
+  }
+  if (strokeIndexes.length === defaultCourse.length) {
+    const missingStrokeIndexes = defaultCourse
+      .map((hole) => hole.number)
+      .filter((value) => !uniqueStrokeIndexes.has(value));
+    if (missingStrokeIndexes.length > 0) {
+      warningIssues.push(`Stroke indexes are missing ${missingStrokeIndexes.join(", ")}.`);
+    }
+  }
+
+  const aggregateChecks = aggregateTotals.map((total) => {
+    const sideHoles = total.holeNumbers.map(
+      (holeNumber) => parsedHoles.find((hole) => hole.number === holeNumber) ?? { number: holeNumber, yardage: null, par: null, strokeIndex: null },
+    );
+    const actualYardage = sideHoles.every((hole) => hole.yardage != null)
+      ? sideHoles.reduce((sum, hole) => sum + (hole.yardage ?? 0), 0)
+      : null;
+    const actualPar = sideHoles.every((hole) => hole.par != null)
+      ? sideHoles.reduce((sum, hole) => sum + (hole.par ?? 0), 0)
+      : null;
+
+    return {
+      label: total.label.toUpperCase(),
+      expectedYardage: total.yardageTotal,
+      actualYardage,
+      expectedPar: total.parTotal,
+      actualPar,
+    };
+  });
+
+  aggregateChecks.forEach((check) => {
+    const mismatchParts: string[] = [];
+    if (check.expectedYardage != null && check.actualYardage != null && check.expectedYardage !== check.actualYardage) {
+      mismatchParts.push(`${check.actualYardage} yds vs OCR ${check.expectedYardage}`);
+    }
+    if (check.expectedPar != null && check.actualPar != null && check.expectedPar !== check.actualPar) {
+      mismatchParts.push(`par ${check.actualPar} vs OCR ${check.expectedPar}`);
+    }
+    if (mismatchParts.length > 0) {
+      warningIssues.push(`${check.label} totals do not match the OCR card: ${mismatchParts.join(" • ")}.`);
+    }
+  });
+
+  const draftTeeName = reviewDraft.teeName.trim();
+  if (draftTeeName && draftTeeName.toLowerCase() !== selectedTee.name.trim().toLowerCase()) {
+    infoIssues.push(`Applying this will overwrite the ${selectedTee.name} tee slot with "${draftTeeName}".`);
+  }
+
+  return {
+    missingParts,
+    blockingIssues,
+    warningIssues,
+    infoIssues,
+    aggregateChecks,
+  };
 }
 
 function buildScorecardReviewDraft(
@@ -1217,41 +1399,8 @@ export default function App() {
     setScorecardReviewVisible(true);
   };
 
-  const applyScorecardReview = () => {
+  const commitScorecardReview = () => {
     if (!scorecardReviewDraft) {
-      return;
-    }
-
-    const seededDefaultCourse = teeHasDefaultHoleScaffold(selectedTee);
-    const seededDefaultRatings = teeHasDefaultRatingScaffold(selectedTee);
-    const missing = summarizeMissingReviewFields(scorecardReviewDraft);
-    const requiresCompleteImport = scorecardReviewDraft.requireCompleteImport;
-    const missingParts: string[] = [];
-
-    if ((requiresCompleteImport || round.courseName.trim() === DEFAULT_COURSE_NAME || !round.courseName.trim()) && !scorecardReviewDraft.courseName.trim()) {
-      missingParts.push("course name");
-    }
-    if ((requiresCompleteImport || seededDefaultRatings) && !scorecardReviewDraft.courseRating.trim()) {
-      missingParts.push("course rating");
-    }
-    if ((requiresCompleteImport || seededDefaultRatings) && !scorecardReviewDraft.slopeRating.trim()) {
-      missingParts.push("slope rating");
-    }
-    if ((requiresCompleteImport || seededDefaultCourse) && missing.yardages > 0) {
-      missingParts.push(`${missing.yardages} yardage${missing.yardages === 1 ? "" : "s"}`);
-    }
-    if ((requiresCompleteImport || seededDefaultCourse) && missing.pars > 0) {
-      missingParts.push(`${missing.pars} par value${missing.pars === 1 ? "" : "s"}`);
-    }
-    if ((requiresCompleteImport || seededDefaultCourse) && missing.strokeIndexes > 0) {
-      missingParts.push(`${missing.strokeIndexes} stroke index${missing.strokeIndexes === 1 ? "" : "es"}`);
-    }
-
-    if (missingParts.length > 0) {
-      Alert.alert(
-        "Finish OCR review",
-        `OCR has not confidently filled everything yet. Add ${missingParts.join(", ")} before applying this imported course.`,
-      );
       return;
     }
 
@@ -1290,6 +1439,48 @@ export default function App() {
     setCourseSetupExpanded(true);
     setScorecardReviewVisible(false);
     Alert.alert("OCR review applied", `Applied the reviewed scorecard values to ${selectedTee.name}.`);
+  };
+
+  const applyScorecardReview = () => {
+    if (!scorecardReviewDraft) {
+      return;
+    }
+
+    if (scorecardReviewAnalysis.missingParts.length > 0) {
+      Alert.alert(
+        "Finish OCR review",
+        `OCR has not confidently filled everything yet. Add ${scorecardReviewAnalysis.missingParts.join(", ")} before applying this imported course.`,
+      );
+      return;
+    }
+
+    if (scorecardReviewAnalysis.blockingIssues.length > 0) {
+      Alert.alert("Fix review issues", scorecardReviewAnalysis.blockingIssues.join("\n"));
+      return;
+    }
+
+    if (scorecardReviewAnalysis.warningIssues.length > 0) {
+      const previewWarnings = scorecardReviewAnalysis.warningIssues.slice(0, 4);
+      const extraWarningCount = scorecardReviewAnalysis.warningIssues.length - previewWarnings.length;
+      const warningMessage = [
+        ...previewWarnings,
+        extraWarningCount > 0 ? `+ ${extraWarningCount} more check${extraWarningCount === 1 ? "" : "s"}` : null,
+      ]
+        .filter((value): value is string => !!value)
+        .join("\n");
+
+      Alert.alert(
+        "Review looks suspicious",
+        `${warningMessage}\n\nApply anyway?`,
+        [
+          { text: "Keep editing", style: "cancel" },
+          { text: "Apply anyway", onPress: commitScorecardReview },
+        ],
+      );
+      return;
+    }
+
+    commitScorecardReview();
   };
 
   const attachScorecardAsset = async (asset: ImagePicker.ImagePickerAsset) => {
@@ -1411,9 +1602,17 @@ export default function App() {
     () => extractScorecardOcrHints(visibleScorecardOcrResult, scorecardReviewDraft?.teeName || selectedTee.name),
     [scorecardReviewDraft?.teeName, selectedTee.name, visibleScorecardOcrResult],
   );
+  const reviewScorecardAggregateTotals = useMemo(
+    () => extractScorecardAggregateTotals(visibleScorecardOcrResult, scorecardReviewDraft?.teeName || selectedTee.name),
+    [scorecardReviewDraft?.teeName, selectedTee.name, visibleScorecardOcrResult],
+  );
   const scorecardHoleSuggestions = useMemo(
     () => extractScorecardHoleSuggestions(visibleScorecardOcrResult, selectedTee.name),
     [selectedTee.name, visibleScorecardOcrResult],
+  );
+  const scorecardReviewAnalysis = useMemo(
+    () => analyzeScorecardReviewDraft(scorecardReviewDraft, selectedTee, round.courseName, reviewScorecardAggregateTotals),
+    [reviewScorecardAggregateTotals, round.courseName, scorecardReviewDraft, selectedTee],
   );
   const missingScorecardHoleNumbers = useMemo(() => {
     const detectedHoleNumbers = new Set(scorecardHoleSuggestions.holes.map((hole) => hole.number));
@@ -3496,6 +3695,65 @@ export default function App() {
                       ) : null}
                     </View>
                   ) : null}
+                  {scorecardReviewAnalysis.aggregateChecks.length > 0 ||
+                  scorecardReviewAnalysis.missingParts.length > 0 ||
+                  scorecardReviewAnalysis.blockingIssues.length > 0 ||
+                  scorecardReviewAnalysis.warningIssues.length > 0 ||
+                  scorecardReviewAnalysis.infoIssues.length > 0 ? (
+                    <View style={styles.subCard}>
+                      <Text style={styles.smallLabel}>Review checks</Text>
+                      <Text style={styles.meta}>These checks compare the current review fields against OCR totals and common 18-hole scorecard patterns.</Text>
+                      {scorecardReviewAnalysis.aggregateChecks.length > 0 ? (
+                        <View style={styles.reviewCheckGroup}>
+                          {scorecardReviewAnalysis.aggregateChecks.map((check) => (
+                            <Text key={`review-check-${check.label}`} style={styles.reviewCheckText}>
+                              {check.label} • OCR {check.expectedYardage ?? "?"} yds / Par {check.expectedPar ?? "?"} • Review {check.actualYardage ?? "?"} yds / Par {check.actualPar ?? "?"}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                      {scorecardReviewAnalysis.missingParts.length > 0 ? (
+                        <View style={[styles.reviewIssueBox, styles.reviewIssueErrorBox]}>
+                          <Text style={styles.reviewIssueTitle}>Still missing</Text>
+                          {scorecardReviewAnalysis.missingParts.map((issue) => (
+                            <Text key={`review-missing-${issue}`} style={styles.reviewIssueText}>
+                              Add {issue}.
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                      {scorecardReviewAnalysis.blockingIssues.length > 0 ? (
+                        <View style={[styles.reviewIssueBox, styles.reviewIssueErrorBox]}>
+                          <Text style={styles.reviewIssueTitle}>Fix before applying</Text>
+                          {scorecardReviewAnalysis.blockingIssues.map((issue) => (
+                            <Text key={`review-blocking-${issue}`} style={styles.reviewIssueText}>
+                              {issue}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                      {scorecardReviewAnalysis.warningIssues.length > 0 ? (
+                        <View style={[styles.reviewIssueBox, styles.reviewIssueWarningBox]}>
+                          <Text style={styles.reviewIssueTitle}>Looks suspicious</Text>
+                          {scorecardReviewAnalysis.warningIssues.map((issue) => (
+                            <Text key={`review-warning-${issue}`} style={styles.reviewIssueText}>
+                              {issue}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                      {scorecardReviewAnalysis.infoIssues.length > 0 ? (
+                        <View style={[styles.reviewIssueBox, styles.reviewIssueInfoBox]}>
+                          <Text style={styles.reviewIssueTitle}>Heads up</Text>
+                          {scorecardReviewAnalysis.infoIssues.map((issue) => (
+                            <Text key={`review-info-${issue}`} style={styles.reviewIssueText}>
+                              {issue}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
                   <View style={styles.subCard}>
                     <Text style={styles.smallLabel}>Course setup</Text>
                     <TextInput
@@ -3634,7 +3892,15 @@ export default function App() {
                   <Pressable onPress={() => setScorecardReviewVisible(false)} style={styles.secondaryButton}>
                     <Text style={styles.secondaryText}>Cancel</Text>
                   </Pressable>
-                  <Pressable onPress={applyScorecardReview} style={styles.primaryButton}>
+                  <Pressable
+                    onPress={applyScorecardReview}
+                    disabled={scorecardReviewAnalysis.missingParts.length > 0 || scorecardReviewAnalysis.blockingIssues.length > 0}
+                    style={[
+                      styles.primaryButton,
+                      (scorecardReviewAnalysis.missingParts.length > 0 || scorecardReviewAnalysis.blockingIssues.length > 0) &&
+                        styles.buttonDisabled,
+                    ]}
+                  >
                     <Text style={styles.primaryText}>Apply review</Text>
                   </Pressable>
                 </View>
@@ -3756,6 +4022,14 @@ const styles = StyleSheet.create({
   ocrHintText: { color: colors.primaryStrong, fontSize: 12, fontWeight: "700" },
   ocrPreviewList: { gap: 8 },
   ocrPreviewLine: { color: colors.ink, fontSize: 13, lineHeight: 18 },
+  reviewCheckGroup: { gap: 6 },
+  reviewCheckText: { color: colors.note, fontSize: 13, lineHeight: 18 },
+  reviewIssueBox: { gap: 6, borderRadius: 14, borderWidth: 1, padding: 12 },
+  reviewIssueErrorBox: { backgroundColor: "#fff1ee", borderColor: "#e3b6aa" },
+  reviewIssueWarningBox: { backgroundColor: "#fff6df", borderColor: "#e0cc93" },
+  reviewIssueInfoBox: { backgroundColor: colors.pale, borderColor: colors.border },
+  reviewIssueTitle: { color: colors.primaryStrong, fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
+  reviewIssueText: { color: colors.ink, fontSize: 13, lineHeight: 18 },
   reviewFieldRow: { flexDirection: "row", gap: 10 },
   reviewField: { flex: 1, gap: 6 },
   reviewHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.line },

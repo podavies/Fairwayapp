@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  extractScorecardAggregateTotals,
   extractScorecardHoleSuggestions,
   extractScorecardNameSuggestions,
   extractScorecardOcrHints,
@@ -532,6 +533,80 @@ const hybridStrategySplitSideScorecardResult = {
   ],
 };
 
+const noisyTotalsRepairSplitSideScorecardResult = {
+  platform: "ios-vision",
+  fullText: [
+    "Please indicate which tee used",
+    "Competition",
+    "Date",
+    "Please indicate which",
+    "Course",
+    "Distance markers are",
+    "Player A M",
+    "Different Club",
+    "M 70 71.1 132",
+    "M 70 69.8 127",
+    "L 75 76.1 136",
+    "L 73 73.6 132",
+    "1 360 353 4 16 346 4 13",
+    "2 413 401 18 4 360 5 9",
+    "3 173 163 3 18 161 3 15",
+    "4 517 499 5 12 466 5 6",
+    "5 428 416 4 2 351 4 5 4",
+    "6 201 187 3 8 160 3 11",
+    "7 346 337 4 14 295 4 17",
+    "8 395 386 4 6 377 4 1",
+    "9 350 344 4 1 338 4 7",
+    "3204 3086 35 2854 36 37 OUT",
+    "10 174 157 3 15 128 3 18",
+    "11 556 538 5 5 502 5 2",
+    "12 434 427 4 1 417 5 5",
+    "13 153 144 3 17 134 3 12",
+    "14 426 409 4 3 362 4 5 3",
+    "15 320 306 4 11 280 4 14",
+    "16 506 491 5 9 456 5 8",
+    "17 185 177 3 13 167 3 16",
+    "18 435 423 4 7 414 5 10",
+    "3189 3072 35 2860 37 38 IN",
+    "6393 6158 70 5714 73 75 TOTAL",
+  ].join("\n"),
+  lines: [
+    "Please indicate which tee used",
+    "Competition",
+    "Date",
+    "Please indicate which",
+    "Course",
+    "Distance markers are",
+    "Player A M",
+    "Different Club",
+    "M 70 71.1 132",
+    "M 70 69.8 127",
+    "L 75 76.1 136",
+    "L 73 73.6 132",
+    "1 360 353 4 16 346 4 13",
+    "2 413 401 18 4 360 5 9",
+    "3 173 163 3 18 161 3 15",
+    "4 517 499 5 12 466 5 6",
+    "5 428 416 4 2 351 4 5 4",
+    "6 201 187 3 8 160 3 11",
+    "7 346 337 4 14 295 4 17",
+    "8 395 386 4 6 377 4 1",
+    "9 350 344 4 1 338 4 7",
+    "3204 3086 35 2854 36 37 OUT",
+    "10 174 157 3 15 128 3 18",
+    "11 556 538 5 5 502 5 2",
+    "12 434 427 4 1 417 5 5",
+    "13 153 144 3 17 134 3 12",
+    "14 426 409 4 3 362 4 5 3",
+    "15 320 306 4 11 280 4 14",
+    "16 506 491 5 9 456 5 8",
+    "17 185 177 3 13 167 3 16",
+    "18 435 423 4 7 414 5 10",
+    "3189 3072 35 2860 37 38 IN",
+    "6393 6158 70 5714 73 75 TOTAL",
+  ].map((text) => ({ text, confidence: 0.91, bounds: null, candidates: [text] })),
+};
+
 test("scorecard OCR hints pull course rating and slope candidates", () => {
   assert.deepEqual(extractScorecardOcrHints(sampleResult), {
     courseRatingCandidates: ["70.7"],
@@ -916,5 +991,53 @@ test("scorecard OCR merges missing split-side holes from fallback text parsing",
     yardage: 556,
     par: 5,
     strokeIndex: 5,
+  });
+});
+
+test("scorecard OCR ignores header noise and repairs split-side holes from totals rows", () => {
+  assert.deepEqual(extractScorecardNameSuggestions(noisyTotalsRepairSplitSideScorecardResult), {
+    courseNameCandidates: ["Different Club"],
+    teeNameCandidates: ["White Men", "Yellow Men", "Yellow Ladies", "Red Ladies"],
+  });
+
+  assert.deepEqual(extractScorecardAggregateTotals(noisyTotalsRepairSplitSideScorecardResult, "White"), [
+    { label: "out", holeNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9], yardageTotal: 3204, parTotal: 35 },
+    { label: "in", holeNumbers: [10, 11, 12, 13, 14, 15, 16, 17, 18], yardageTotal: 3189, parTotal: 35 },
+    { label: "total", holeNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], yardageTotal: 6393, parTotal: 70 },
+  ]);
+  assert.deepEqual(extractScorecardAggregateTotals(noisyTotalsRepairSplitSideScorecardResult, "Yellow Ladies"), [
+    { label: "out", holeNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9], yardageTotal: 3086, parTotal: 37 },
+    { label: "in", holeNumbers: [10, 11, 12, 13, 14, 15, 16, 17, 18], yardageTotal: 3072, parTotal: 38 },
+    { label: "total", holeNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], yardageTotal: 6158, parTotal: 75 },
+  ]);
+
+  const whiteParsed = extractScorecardHoleSuggestions(noisyTotalsRepairSplitSideScorecardResult, "White");
+  assert.equal(whiteParsed.holes.length, 18);
+  assert.deepEqual(whiteParsed.holes[1], {
+    number: 2,
+    yardage: 413,
+    par: 4,
+    strokeIndex: 4,
+  });
+  assert.deepEqual(whiteParsed.holes[8], {
+    number: 9,
+    yardage: 371,
+    par: 4,
+    strokeIndex: 10,
+  });
+
+  const yellowLadiesParsed = extractScorecardHoleSuggestions(noisyTotalsRepairSplitSideScorecardResult, "Yellow Ladies");
+  assert.equal(yellowLadiesParsed.holes.length, 18);
+  assert.deepEqual(yellowLadiesParsed.holes[1], {
+    number: 2,
+    yardage: 401,
+    par: 5,
+    strokeIndex: 9,
+  });
+  assert.deepEqual(yellowLadiesParsed.holes[13], {
+    number: 14,
+    yardage: 409,
+    par: 5,
+    strokeIndex: 3,
   });
 });
