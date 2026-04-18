@@ -2,12 +2,12 @@
 
 Cross-platform golf mobile app starter for iOS and Android using Expo and React Native.
 
-## Version 1.5.2
+## Version 1.5.4
 
-- Added stronger live score entry flows for both `By group` and `By player`.
-- Restored one-tap single-digit score entry in both scoring modes.
-- Improved score correction while the keyboard is open so earlier holes are easier to revisit.
-- Reduced scroll conflicts during player score entry.
+- Fixed mixed-field ghost scoring so a 3-ball cannot double-count one of its own players.
+- Restored two-digit gross score entry in both score-entry modes while keeping quick single-digit advance.
+- Fixed round dates so saved and displayed dates stay on the local calendar day.
+- Reduced local save churn while editing rounds and course setup.
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the current release notes.
 
@@ -38,10 +38,16 @@ npm run ios
 npm run android
 ```
 
-For a fresh iPhone test session that clears stale Expo listeners and starts a new tunnel on port `8082`, run:
+For a fresh iPhone test session that clears stale Expo listeners and starts a new Expo Go session on port `8082`, run:
 
 ```powershell
 npm run test:iphone
+```
+
+If the tunnel provider is unavailable, you can fall back to LAN mode:
+
+```powershell
+npx expo start --lan --clear --port 8082
 ```
 
 ## Next build steps

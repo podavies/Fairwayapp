@@ -28,6 +28,11 @@ import {
   teeForPlayer as calculateTeeForPlayer,
   totalPoints as calculateTotalPoints,
 } from "./src/scoring";
+import {
+  buildLocalDateValue,
+  formatRoundDate,
+  syncSharedGhosts,
+} from "./src/roundUtils";
 
 type Hole = {
   number: number;
@@ -105,18 +110,33 @@ const STORAGE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}rollup-rounds.json`
   : null;
 const DEFAULT_COURSE_NAME = "Default Course";
+const SCORE_INPUT_MAX_DIGITS = 2;
+const SCORE_AUTO_ADVANCE_DELAY_MS = 550;
+const STORAGE_WRITE_DELAY_MS = 300;
 
 const colors = {
-  bg: "#f3efe4",
-  panel: "#fffdf7",
-  green: "#143726",
-  green2: "#2d5a3d",
-  sand: "#dcc99a",
-  pale: "#f4efdf",
-  soft: "#ece4d1",
-  ink: "#1c231d",
-  muted: "#6d6b64",
-  border: "#ddd1b8",
+  bg: "#e3e7eb",
+  panel: "#ffffff",
+  field: "#ffffff",
+  hero: "#0e1116",
+  primary: "#515a66",
+  primaryStrong: "#1f2630",
+  primarySoft: "#cfd7df",
+  pale: "#edf1f5",
+  soft: "#dbe1e8",
+  chip: "#d2d8e0",
+  scoreBox: "#c8d1da",
+  preview: "#d1d8e0",
+  ink: "#090c10",
+  muted: "#4f5863",
+  border: "#c2cad3",
+  line: "#d7dde5",
+  heroText: "#ffffff",
+  heroMuted: "#e1e5ea",
+  heroSubtle: "#aeb6c0",
+  placeholder: "#878f9b",
+  note: "#404750",
+  overlay: "rgba(3,5,8,0.72)",
 };
 
 const teeDefinitions = [
@@ -128,7 +148,7 @@ const teeDefinitions = [
 
 const id = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => buildLocalDateValue();
 const defaultGroups = () => [
   { id: id("group"), name: "Group 1" },
   { id: id("group"), name: "Group 2" },
@@ -311,43 +331,8 @@ function compareWorstPlayers(
   return a.name.localeCompare(b.name);
 }
 
-function shuffle<T>(items: T[]) {
-  const clone = [...items];
-  for (let index = clone.length - 1; index > 0; index -= 1) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
-    const current = clone[index];
-    clone[index] = clone[randomIndex];
-    clone[randomIndex] = current;
-  }
-  return clone;
-}
-
 function syncGhosts(players: Player[], groups: Group[], current: Record<string, string | null> = {}, force = false) {
-  const next: Record<string, string | null> = {};
-  const groupSizes = new Map(
-    groups.map((group) => [group.id, players.filter((player) => player.groupId === group.id).length]),
-  );
-  const activeGroupSizes = [...groupSizes.values()].filter((size) => size > 0);
-  const mixedThreeAndFour = activeGroupSizes.includes(3) && activeGroupSizes.includes(4);
-
-  if (!mixedThreeAndFour) {
-    return next;
-  }
-
-  const threeBallGroups = groups.filter((group) => groupSizes.get(group.id) === 3);
-  const eligibleGhostIds = players.map((player) => player.id);
-  const existingSharedGhost = !force
-    ? threeBallGroups
-        .map((group) => current[group.id] ?? null)
-        .find((ghostId): ghostId is string => !!ghostId && eligibleGhostIds.includes(ghostId))
-    : null;
-  const sharedGhost = existingSharedGhost ?? shuffle(eligibleGhostIds)[0] ?? null;
-
-  threeBallGroups.forEach((group) => {
-    next[group.id] = sharedGhost;
-  });
-
-  return next;
+  return syncSharedGhosts(players, groups, current, force);
 }
 
 function cloneRound(round: RoundState): RoundState {
@@ -536,11 +521,7 @@ function blankRound(): RoundState {
 }
 
 function formatDate(value: string) {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return formatRoundDate(value);
 }
 
 function groupLabel(size: number) {
@@ -720,6 +701,7 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const persist = async () => {
       try {
         await FileSystem.writeAsStringAsync(
@@ -740,9 +722,14 @@ export default function App() {
         }
       }
     };
-    void persist();
+    timeoutId = setTimeout(() => {
+      void persist();
+    }, STORAGE_WRITE_DELAY_MS);
     return () => {
       cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
   }, [round, savedCourses, savedPlayerProfiles, savedRounds, storageReady]);
 
@@ -965,8 +952,12 @@ export default function App() {
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const groupEntryScrollRefs = useRef<Record<string, ScrollView | null>>({});
+  const groupEntryStripWidths = useRef<Record<string, number>>({});
+  const groupEntryHoleLayouts = useRef<Record<string, Record<number, { x: number; width: number }>>>({});
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
   const playerEntryRowOffsets = useRef<Record<number, number>>({});
+  const pendingGroupFocusKey = useRef<string | null>(null);
   const pendingAdvanceTimeouts = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
   const [focusedPlayerEntryKey, setFocusedPlayerEntryKey] = useState<string | null>(null);
   const playerEntryKeys = useMemo(
@@ -974,19 +965,35 @@ export default function App() {
     [scoreEntryCourse, scoreEntryPlayer],
   );
 
-  const setGroupEntryHole = (groupId: string, holeNumber: number) => {
-    setGroupEntryHoleByGroup((current) => ({
-      ...current,
-      [groupId]: Math.max(1, Math.min(18, holeNumber)),
-    }));
+  const requestGroupEntryFocus = (key: string | null) => {
+    pendingGroupFocusKey.current = key;
   };
 
-  const advanceGroupEntryHole = (groupId: string, delta: number) => {
+  const setGroupEntryHole = (groupId: string, holeNumber: number, focusPlayerId?: string) => {
     setGroupEntryHoleByGroup((current) => {
-      const currentHole = current[groupId] ?? 1;
+      const nextHole = Math.max(1, Math.min(18, holeNumber));
+      if (focusPlayerId) {
+        requestGroupEntryFocus(`group:${groupId}:${nextHole}:${focusPlayerId}`);
+      }
+
       return {
         ...current,
-        [groupId]: Math.max(1, Math.min(18, currentHole + delta)),
+        [groupId]: nextHole,
+      };
+    });
+  };
+
+  const advanceGroupEntryHole = (groupId: string, delta: number, focusPlayerId?: string) => {
+    setGroupEntryHoleByGroup((current) => {
+      const currentHole = current[groupId] ?? 1;
+      const nextHole = Math.max(1, Math.min(18, currentHole + delta));
+      if (focusPlayerId && nextHole !== currentHole) {
+        requestGroupEntryFocus(`group:${groupId}:${nextHole}:${focusPlayerId}`);
+      }
+
+      return {
+        ...current,
+        [groupId]: nextHole,
       };
     });
   };
@@ -1136,6 +1143,11 @@ export default function App() {
       return;
     }
 
+    if (sanitized !== "1") {
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
+      return;
+    }
+
     pendingAdvanceTimeouts.current[currentKey] = setTimeout(() => {
       if (!inputRefs.current[currentKey]?.isFocused?.()) {
         clearPendingAdvance(currentKey);
@@ -1143,7 +1155,7 @@ export default function App() {
       }
 
       advanceFromScoreInput(orderedKeys, currentKey, onComplete);
-    }, 550);
+    }, SCORE_AUTO_ADVANCE_DELAY_MS);
   };
 
   useEffect(
@@ -1174,6 +1186,33 @@ export default function App() {
     return Number.isFinite(holeNumber) ? holeNumber : null;
   };
 
+  const rememberGroupEntryHoleLayout = (groupId: string, holeNumber: number, x: number, width: number) => {
+    if (!groupEntryHoleLayouts.current[groupId]) {
+      groupEntryHoleLayouts.current[groupId] = {};
+    }
+
+    groupEntryHoleLayouts.current[groupId][holeNumber] = { x, width };
+  };
+
+  const scrollGroupEntryHoleIntoView = (groupId: string, holeNumber: number, animated = true) => {
+    const scrollView = groupEntryScrollRefs.current[groupId];
+    const holeLayout = groupEntryHoleLayouts.current[groupId]?.[holeNumber];
+    if (!scrollView || !holeLayout) {
+      return;
+    }
+
+    const visibleWidth = groupEntryStripWidths.current[groupId];
+    const targetX =
+      visibleWidth && visibleWidth > holeLayout.width
+        ? Math.max(0, holeLayout.x - (visibleWidth - holeLayout.width) / 2)
+        : Math.max(0, holeLayout.x - 16);
+
+    scrollView.scrollTo({
+      x: targetX,
+      animated,
+    });
+  };
+
   const scrollPlayerEntryInputIntoView = (key: string) => {
     const holeNumber = getHoleNumberFromPlayerEntryKey(key);
     if (holeNumber === null) {
@@ -1190,6 +1229,38 @@ export default function App() {
       animated: true,
     });
   };
+
+  useEffect(() => {
+    const nextKey = pendingGroupFocusKey.current;
+    if (!nextKey) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      inputRefs.current[nextKey]?.focus();
+      requestGroupEntryFocus(null);
+    }, 80);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [groupEntryHoleByGroup]);
+
+  useEffect(() => {
+    if (tab !== "live" || liveSection !== "entry" || scoreEntryMode !== "group") {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      Object.entries(groupEntryHoleByGroup).forEach(([groupId, holeNumber]) => {
+        scrollGroupEntryHoleIntoView(groupId, holeNumber, true);
+      });
+    }, 0);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [groupEntryHoleByGroup, liveSection, scoreEntryMode, tab]);
 
   const clearCurrentRound = () => {
     setRound(blankRound());
@@ -1285,22 +1356,25 @@ export default function App() {
                 value={round.name}
                 onChangeText={(value) => setRound((current) => ({ ...current, name: value }))}
                 placeholder="Round name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <TextInput
                 value={round.date}
                 onChangeText={(value) => setRound((current) => ({ ...current, date: value }))}
                 placeholder="YYYY-MM-DD"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
-              <View style={styles.buttonRow}>
-                <Pressable onPress={() => { setRound(blankRound()); setSelectedHole(1); setTab("setup"); }} style={styles.secondaryButton}>
-                  <Text style={styles.secondaryText}>New blank round</Text>
-                </Pressable>
+              <View style={styles.roundDetailActions}>
                 <Pressable onPress={() => setTab("live")} style={styles.primaryButton}>
                   <Text style={styles.primaryText}>Log scores</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setRound(blankRound()); setSelectedHole(1); setTab("setup"); }}
+                  style={styles.roundDetailSecondaryButton}
+                >
+                  <Text style={styles.roundDetailSecondaryText}>Start new blank round</Text>
                 </Pressable>
               </View>
               {__DEV__ ? (
@@ -1325,7 +1399,7 @@ export default function App() {
                 value={round.courseName}
                 onChangeText={(value) => setRound((current) => ({ ...current, courseName: value.slice(0, 40) }))}
                 placeholder="Course name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <Text style={styles.sectionSubtitle}>
@@ -1358,7 +1432,7 @@ export default function App() {
                     }))
                   }
                   placeholder="Tee name"
-                  placeholderTextColor="#8a877f"
+                  placeholderTextColor={colors.placeholder}
                   style={styles.input}
                 />
                 <View style={styles.courseMetaRow}>
@@ -1381,7 +1455,7 @@ export default function App() {
                       }
                       keyboardType="decimal-pad"
                       placeholder="70.0"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.courseInput}
                     />
                   </View>
@@ -1404,7 +1478,7 @@ export default function App() {
                       }
                       keyboardType="number-pad"
                       placeholder="120"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.courseInput}
                     />
                   </View>
@@ -1458,7 +1532,7 @@ export default function App() {
                             }))
                           }
                           placeholder="Hole name"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseNameInput}
                         />
                       </View>
@@ -1488,7 +1562,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="350"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1518,7 +1592,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="4"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1548,7 +1622,7 @@ export default function App() {
                           }
                           keyboardType="number-pad"
                           placeholder="1"
-                          placeholderTextColor="#8a877f"
+                          placeholderTextColor={colors.placeholder}
                           style={styles.courseInput}
                         />
                       </View>
@@ -1630,7 +1704,7 @@ export default function App() {
                         }))
                       }
                       placeholder="Group name"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.input}
                     />
                     <Text style={styles.meta}>{groupLabel(size)} • {groupNote(size)}</Text>
@@ -1658,7 +1732,7 @@ export default function App() {
                 value={draftName}
                 onChangeText={handleDraftNameChange}
                 placeholder="Player name"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               {draftPlayerSuggestions.length > 0 ? (
@@ -1690,7 +1764,7 @@ export default function App() {
                 onChangeText={(value) => setDraftHandicap(value.replace(/[^0-9]/g, "").slice(0, 2))}
                 keyboardType="number-pad"
                 placeholder="Handicap"
-                placeholderTextColor="#8a877f"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
               />
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -1801,7 +1875,7 @@ export default function App() {
                         });
                       }}
                       placeholder="Player name"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.input}
                     />
                     <TextInput
@@ -1825,7 +1899,7 @@ export default function App() {
                       }
                       keyboardType="number-pad"
                       placeholder="Handicap"
-                      placeholderTextColor="#8a877f"
+                      placeholderTextColor={colors.placeholder}
                       style={styles.input}
                     />
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -2138,9 +2212,10 @@ export default function App() {
                         const groupCurrentHole =
                           selectedTee.course.find((hole) => hole.number === groupSelectedHole) ?? selectedTee.course[0] ?? defaultCourse[0];
                         const groupEntryKeys = members.map((player) => `group:${group.id}:${groupSelectedHole}:${player.id}`);
+                        const firstGroupMemberId = members[0]?.id;
                         const advanceToNextGroupHole = () => {
                           if (groupSelectedHole < 18) {
-                            advanceGroupEntryHole(group.id, 1);
+                            advanceGroupEntryHole(group.id, 1, firstGroupMemberId);
                           }
                         };
                         const groupPanResponder = PanResponder.create({
@@ -2165,13 +2240,35 @@ export default function App() {
                               <Text style={styles.meta}>Hole {groupSelectedHole} of 18</Text>
                               <Text style={styles.meta}>Swipe left for next hole or right for previous hole.</Text>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                            <ScrollView
+                              ref={(ref) => {
+                                groupEntryScrollRefs.current[group.id] = ref;
+                              }}
+                              horizontal
+                              showsHorizontalScrollIndicator={false}
+                              contentContainerStyle={styles.chipRow}
+                              onLayout={(event) => {
+                                groupEntryStripWidths.current[group.id] = event.nativeEvent.layout.width;
+                                scrollGroupEntryHoleIntoView(group.id, groupSelectedHole, false);
+                              }}
+                            >
                               {selectedTee.course.map((hole) => {
                                 const active = hole.number === groupSelectedHole;
                                 return (
                                   <Pressable
                                     key={`${group.id}-${hole.number}`}
                                     onPress={() => setGroupEntryHole(group.id, hole.number)}
+                                    onLayout={(event) => {
+                                      rememberGroupEntryHoleLayout(
+                                        group.id,
+                                        hole.number,
+                                        event.nativeEvent.layout.x,
+                                        event.nativeEvent.layout.width,
+                                      );
+                                      if (active) {
+                                        scrollGroupEntryHoleIntoView(group.id, hole.number, false);
+                                      }
+                                    }}
                                     style={[styles.holeChip, active && styles.chipActive]}
                                   >
                                     <Text style={[styles.chipText, active && styles.chipTextActive]}>{hole.number}</Text>
@@ -2205,13 +2302,13 @@ export default function App() {
                                   groupEntryKeys,
                                   `group:${group.id}:${groupSelectedHole}:${player.id}`,
                                   advanceToNextGroupHole,
-                                  1,
+                                  SCORE_INPUT_MAX_DIGITS,
                                 )
                               }
                               keyboardType="number-pad"
                               placeholder="Score"
-                              placeholderTextColor="#8a877f"
-                              maxLength={1}
+                              placeholderTextColor={colors.placeholder}
+                              maxLength={SCORE_INPUT_MAX_DIGITS}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -2279,6 +2376,35 @@ export default function App() {
                           </Text>
                         </View>
                         <View style={styles.playerEntryBody}>
+                          {scoreEntryRunningTotals ? (
+                            <View style={styles.entryTotalsBar}>
+                              <View style={styles.entryTotalsRow}>
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Running shots</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.shots}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.grossLogged} gross score{scoreEntryRunningTotals.grossLogged === 1 ? "" : "s"} logged
+                                  </Text>
+                                </View>
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Running points</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.points}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.holesLogged}/18 holes recorded
+                                  </Text>
+                                </View>
+                              </View>
+                              {scoreEntryRunningTotals.frontNine?.holesLogged === 9 ? (
+                                <View style={styles.entryTotalCard}>
+                                  <Text style={styles.smallLabel}>Front 9 total</Text>
+                                  <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.frontNine.shots}</Text>
+                                  <Text style={styles.meta}>
+                                    {scoreEntryRunningTotals.frontNine.points} point{scoreEntryRunningTotals.frontNine.points === 1 ? "" : "s"} through 9 holes
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          ) : null}
                           <ScrollView
                             ref={playerEntryScrollRef}
                             style={styles.playerEntryList}
@@ -2316,13 +2442,13 @@ export default function App() {
                                         playerEntryKeys,
                                         inputKey,
                                         undefined,
-                                        1,
+                                        SCORE_INPUT_MAX_DIGITS,
                                       )
                                     }
                                     keyboardType="number-pad"
                                     placeholder="Score"
-                                    placeholderTextColor="#8a877f"
-                                    maxLength={1}
+                                    placeholderTextColor={colors.placeholder}
+                                    maxLength={SCORE_INPUT_MAX_DIGITS}
                                     blurOnSubmit={false}
                                     onFocus={() => {
                                       setFocusedPlayerEntryKey(inputKey);
@@ -2353,24 +2479,6 @@ export default function App() {
                               );
                             })}
                           </ScrollView>
-                          {scoreEntryRunningTotals ? (
-                            <View style={styles.entryTotalsBar}>
-                              <View style={styles.entryTotalCard}>
-                                <Text style={styles.smallLabel}>Running shots</Text>
-                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.shots}</Text>
-                                <Text style={styles.meta}>
-                                  {scoreEntryRunningTotals.grossLogged} gross score{scoreEntryRunningTotals.grossLogged === 1 ? "" : "s"} logged
-                                </Text>
-                              </View>
-                              <View style={styles.entryTotalCard}>
-                                <Text style={styles.smallLabel}>Running points</Text>
-                                <Text style={styles.entryTotalValue}>{scoreEntryRunningTotals.points}</Text>
-                                <Text style={styles.meta}>
-                                  {scoreEntryRunningTotals.holesLogged}/18 holes recorded
-                                </Text>
-                              </View>
-                            </View>
-                          ) : null}
                         </View>
                       </View>
                     ) : (
@@ -2535,109 +2643,110 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 20, paddingBottom: 36, gap: 18 },
-  hero: { backgroundColor: colors.green, borderRadius: 28, padding: 24, gap: 16 },
-  kicker: { color: colors.sand, fontSize: 13, fontWeight: "700", letterSpacing: 1.8, textTransform: "uppercase" },
-  heroTitle: { color: "#fcfbf5", fontSize: 30, lineHeight: 36, fontWeight: "700" },
-  heroCopy: { color: "#d5e4d7", fontSize: 15, lineHeight: 22 },
+  hero: { backgroundColor: colors.hero, borderRadius: 28, padding: 24, gap: 16 },
+  kicker: { color: colors.heroSubtle, fontSize: 13, fontWeight: "700", letterSpacing: 1.8, textTransform: "uppercase" },
+  heroTitle: { color: colors.heroText, fontSize: 30, lineHeight: 36, fontWeight: "700" },
+  heroCopy: { color: colors.heroMuted, fontSize: 15, lineHeight: 22 },
   statRow: { flexDirection: "row", gap: 12 },
-  statCard: { flex: 1, backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 18, paddingVertical: 14, paddingHorizontal: 10 },
+  statCard: { flex: 1, backgroundColor: "rgba(255,255,255,0.14)", borderRadius: 18, paddingVertical: 14, paddingHorizontal: 10 },
   statValue: { color: "#ffffff", fontSize: 24, fontWeight: "700", textAlign: "center" },
-  statLabel: { color: "#ccdacd", fontSize: 12, textAlign: "center", marginTop: 4 },
+  statLabel: { color: colors.heroMuted, fontSize: 12, textAlign: "center", marginTop: 4 },
   tabRow: { flexDirection: "row", gap: 10 },
-  tabButton: { flex: 1, backgroundColor: "rgba(255,255,255,0.09)", borderRadius: 16, paddingVertical: 12, alignItems: "center" },
-  tabButtonActive: { backgroundColor: colors.sand },
-  tabText: { color: "#dce5dd", fontWeight: "700", fontSize: 14 },
-  tabTextActive: { color: colors.ink },
-  segmentButton: { flex: 1, backgroundColor: "#e8e0cd", borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: colors.border },
-  segmentButtonActive: { backgroundColor: colors.green, borderColor: colors.green },
-  segmentText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  tabButton: { flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 16, paddingVertical: 12, alignItems: "center" },
+  tabButtonActive: { backgroundColor: "#ffffff" },
+  tabText: { color: colors.heroMuted, fontWeight: "700", fontSize: 14 },
+  tabTextActive: { color: colors.hero },
+  segmentButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 12, alignItems: "center", borderWidth: 1, borderColor: colors.border },
+  segmentButtonActive: { backgroundColor: colors.primaryStrong, borderColor: colors.primaryStrong },
+  segmentText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
   segmentTextActive: { color: "#ffffff" },
   section: { gap: 3 },
   sectionTitle: { color: colors.ink, fontSize: 24, fontWeight: "700" },
   sectionSubtitle: { color: colors.muted, fontSize: 14 },
   card: { backgroundColor: colors.panel, borderRadius: 24, padding: 18, borderWidth: 1, borderColor: colors.border, gap: 12 },
   subCard: { backgroundColor: colors.pale, borderRadius: 18, padding: 14, gap: 10 },
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: "#ffffff", paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, color: colors.ink },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: colors.field, paddingHorizontal: 14, paddingVertical: 14, fontSize: 16, color: colors.ink },
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  roundDetailActions: { gap: 10 },
   buttonRow: { flexDirection: "row", gap: 12 },
-  primaryButton: { flex: 1, backgroundColor: colors.green, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
-  secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
+  primaryButton: { flex: 1, backgroundColor: colors.primaryStrong, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center" },
+  secondaryButton: { flex: 1, backgroundColor: colors.soft, borderRadius: 16, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center", borderWidth: 1, borderColor: colors.border },
   primaryText: { color: "#ffffff", fontWeight: "700", fontSize: 14 },
-  secondaryText: { color: colors.green2, fontWeight: "700", fontSize: 14 },
-  smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12 },
-  smallButtonText: { color: colors.green2, fontWeight: "700", fontSize: 12 },
-  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#e5dcc7" },
+  secondaryText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
+  roundDetailSecondaryButton: {
+    alignSelf: "flex-start",
+    backgroundColor: colors.field,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  roundDetailSecondaryText: { color: colors.muted, fontWeight: "700", fontSize: 13 },
+  smallButton: { alignSelf: "flex-start", backgroundColor: colors.soft, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: colors.border },
+  smallButtonText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 12 },
+  suggestionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
   suggestionRowLast: { borderBottomWidth: 0, paddingBottom: 0 },
   suggestionCopy: { flex: 1, gap: 2 },
   chipRow: { gap: 8, paddingRight: 8 },
-  chip: { backgroundColor: "#e6dfcf", borderRadius: 16, paddingVertical: 10, paddingHorizontal: 14 },
-  chipActive: { backgroundColor: colors.green },
-  chipText: { color: colors.green2, fontWeight: "700", fontSize: 13 },
+  chip: { backgroundColor: colors.chip, borderRadius: 16, paddingVertical: 10, paddingHorizontal: 14 },
+  chipActive: { backgroundColor: colors.primaryStrong },
+  chipText: { color: colors.primaryStrong, fontWeight: "700", fontSize: 13 },
   chipTextActive: { color: "#ffffff" },
-  courseRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  courseRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.line },
   courseLabelWrap: { flex: 1 },
-  courseNameInput: { marginTop: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
+  courseNameInput: { marginTop: 6, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.ink },
   courseMetaRow: { flexDirection: "row", gap: 10 },
   courseMetaInputWrap: { flex: 1, gap: 6 },
   courseInputWrap: { width: 72, gap: 6 },
-  courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
+  courseInput: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 10, textAlign: "center", fontSize: 16, fontWeight: "700", color: colors.ink },
   cardTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
-  smallLabel: { color: colors.green2, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.1 },
-  summaryCard: { backgroundColor: colors.sand, borderRadius: 20, padding: 16, gap: 4 },
+  smallLabel: { color: colors.primaryStrong, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.1 },
+  summaryCard: { backgroundColor: colors.scoreBox, borderRadius: 20, padding: 16, gap: 4 },
   summaryTitle: { color: colors.ink, fontSize: 24, fontWeight: "700" },
   meta: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   rankRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12, paddingBottom: 10 },
   rankLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  rankNumber: { width: 34, height: 34, borderRadius: 17, textAlign: "center", textAlignVertical: "center", backgroundColor: "#edf2eb", color: colors.green2, fontWeight: "700", fontSize: 16, overflow: "hidden" },
-  badge: { minWidth: 58, borderRadius: 18, backgroundColor: colors.green, paddingVertical: 10, paddingHorizontal: 12, alignItems: "center" },
+  rankNumber: { width: 34, height: 34, borderRadius: 17, textAlign: "center", textAlignVertical: "center", backgroundColor: colors.scoreBox, color: colors.primaryStrong, fontWeight: "700", fontSize: 16, overflow: "hidden" },
+  badge: { minWidth: 58, borderRadius: 18, backgroundColor: colors.primaryStrong, paddingVertical: 10, paddingHorizontal: 12, alignItems: "center" },
   badgeValue: { color: "#ffffff", fontSize: 20, fontWeight: "700" },
-  badgeLabel: { color: "#dce5dd", fontSize: 11 },
+  badgeLabel: { color: colors.heroMuted, fontSize: 11 },
   itemTitle: { color: colors.ink, fontSize: 17, fontWeight: "700" },
   itemText: { color: colors.ink, fontSize: 15, lineHeight: 20 },
-  itemValue: { color: colors.green2, fontSize: 15, fontWeight: "700" },
-  infoBox: { backgroundColor: "#edf2eb", borderRadius: 18, padding: 14 },
-  infoText: { color: colors.green2, fontSize: 14, lineHeight: 19 },
-  holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e6dfcf", alignItems: "center", justifyContent: "center" },
+  itemValue: { color: colors.primaryStrong, fontSize: 15, fontWeight: "700" },
+  infoBox: { backgroundColor: colors.scoreBox, borderRadius: 18, padding: 14 },
+  infoText: { color: colors.primaryStrong, fontSize: 14, lineHeight: 19 },
+  holeChip: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.chip, alignItems: "center", justifyContent: "center" },
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   scoreInfo: { flex: 1, gap: 2 },
   playerEntryCard: { overflow: "hidden" },
-  playerEntryBody: { position: "relative", height: 500 },
+  playerEntryBody: { height: 500, gap: 12 },
   playerEntryList: { flex: 1 },
-  playerEntryListContent: { paddingBottom: 128 },
-  entryTotalsBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: "row",
-    gap: 10,
-    paddingTop: 14,
-    backgroundColor: colors.panel,
-    borderTopWidth: 1,
-    borderTopColor: "#e5dcc7",
-  },
-  entryTotalCard: { flex: 1, backgroundColor: "#edf2eb", borderRadius: 18, padding: 12, gap: 4 },
-  entryTotalValue: { color: colors.green2, fontSize: 28, lineHeight: 32, fontWeight: "700" },
-  playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#eee4d1" },
+  playerEntryListContent: { paddingBottom: 24 },
+  entryTotalsBar: { gap: 10 },
+  entryTotalsRow: { flexDirection: "row", gap: 10 },
+  entryTotalCard: { flex: 1, backgroundColor: colors.scoreBox, borderRadius: 18, padding: 12, gap: 4 },
+  entryTotalValue: { color: colors.primaryStrong, fontSize: 28, lineHeight: 32, fontWeight: "700" },
+  playerEntryRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.line },
   playerEntryInfo: { flex: 1, gap: 2 },
-  scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
-  scoreInputBlob: { color: colors.green2 },
-  blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center" },
-  blobButtonActive: { backgroundColor: colors.green },
-  blobButtonText: { color: colors.green2, fontSize: 12, fontWeight: "700" },
+  scoreInput: { width: 68, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 12, textAlign: "center", fontSize: 18, fontWeight: "700", color: colors.ink },
+  scoreInputBlob: { color: colors.primaryStrong },
+  blobButton: { width: 56, borderRadius: 14, backgroundColor: colors.soft, paddingVertical: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border },
+  blobButtonActive: { backgroundColor: colors.primaryStrong },
+  blobButtonText: { color: colors.primaryStrong, fontSize: 12, fontWeight: "700" },
   blobButtonTextActive: { color: "#ffffff" },
-  pointsBox: { width: 58, borderRadius: 16, backgroundColor: "#edf2eb", paddingVertical: 10, alignItems: "center" },
-  pointsText: { color: colors.green2, fontSize: 20, fontWeight: "700" },
-  playerChip: { backgroundColor: "#e6dfcf", borderRadius: 18, paddingVertical: 12, paddingHorizontal: 14, gap: 2 },
-  playerChipActive: { backgroundColor: colors.green },
-  playerChipName: { color: colors.green2, fontWeight: "700", fontSize: 14 },
+  pointsBox: { width: 58, borderRadius: 16, backgroundColor: colors.scoreBox, paddingVertical: 10, alignItems: "center" },
+  pointsText: { color: colors.primaryStrong, fontSize: 20, fontWeight: "700" },
+  playerChip: { backgroundColor: colors.chip, borderRadius: 18, paddingVertical: 12, paddingHorizontal: 14, gap: 2 },
+  playerChipActive: { backgroundColor: colors.primaryStrong },
+  playerChipName: { color: colors.primaryStrong, fontWeight: "700", fontSize: 14 },
   playerChipNameActive: { color: "#ffffff" },
   playerChipMeta: { color: colors.muted, fontSize: 12 },
-  playerChipMetaActive: { color: "#dce5dd" },
-  noteCard: { backgroundColor: colors.soft, borderRadius: 22, padding: 18, gap: 10 },
-  noteText: { color: "#4e4a41", fontSize: 14, lineHeight: 20 },
+  playerChipMetaActive: { color: colors.heroMuted },
+  noteCard: { backgroundColor: colors.pale, borderRadius: 22, padding: 18, gap: 10, borderWidth: 1, borderColor: colors.border },
+  noteText: { color: colors.note, fontSize: 14, lineHeight: 20 },
   modalScrim: { flex: 1, justifyContent: "center", padding: 20 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(20,55,38,0.5)" },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.overlay },
   modalCard: { maxHeight: "85%", backgroundColor: colors.panel, borderRadius: 24, borderWidth: 1, borderColor: colors.border, padding: 18, gap: 14 },
   modalHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   modalTitleWrap: { flex: 1, gap: 4 },
@@ -2647,9 +2756,9 @@ const styles = StyleSheet.create({
   modalScrollContent: { gap: 10, paddingBottom: 4 },
   modalHoleRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.pale, borderRadius: 18, padding: 12 },
   modalHoleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
-  modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#edf2eb", alignItems: "center", justifyContent: "center" },
-  modalHoleNumberText: { color: colors.green2, fontSize: 16, fontWeight: "700" },
-  modalStat: { width: 58, borderRadius: 14, backgroundColor: "#ffffff", paddingVertical: 8, alignItems: "center" },
+  modalHoleNumber: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.scoreBox, alignItems: "center", justifyContent: "center" },
+  modalHoleNumberText: { color: colors.primaryStrong, fontSize: 16, fontWeight: "700" },
+  modalStat: { width: 58, borderRadius: 14, backgroundColor: colors.field, paddingVertical: 8, alignItems: "center" },
   modalStatLabel: { color: colors.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6 },
-  modalStatValue: { color: colors.green2, fontSize: 18, fontWeight: "700" },
+  modalStatValue: { color: colors.primaryStrong, fontSize: 18, fontWeight: "700" },
 });
