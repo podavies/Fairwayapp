@@ -2,13 +2,12 @@
 
 Cross-platform golf mobile app starter for iOS and Android using Expo and React Native.
 
-## Version 1.5.3
+## Version 1.5.4
 
-- Updated the app icon and colour palette to match the V2 direction.
-- Fixed group score entry so the next hole starts back on the first player.
-- Moved player running totals into a clearer position during score entry.
-- Added a front-nine total card in player-by-player entry after hole 9.
-- Restyled the Round Details actions so `Log scores` stands out as the primary action.
+- Fixed mixed-field ghost scoring so a 3-ball cannot double-count one of its own players.
+- Restored two-digit gross score entry in both score-entry modes while keeping quick single-digit advance.
+- Fixed round dates so saved and displayed dates stay on the local calendar day.
+- Reduced local save churn while editing rounds and course setup.
 
 See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the current release notes.
 

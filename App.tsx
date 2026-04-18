@@ -28,6 +28,11 @@ import {
   teeForPlayer as calculateTeeForPlayer,
   totalPoints as calculateTotalPoints,
 } from "./src/scoring";
+import {
+  buildLocalDateValue,
+  formatRoundDate,
+  syncSharedGhosts,
+} from "./src/roundUtils";
 
 type Hole = {
   number: number;
@@ -105,6 +110,9 @@ const STORAGE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}rollup-rounds.json`
   : null;
 const DEFAULT_COURSE_NAME = "Default Course";
+const SCORE_INPUT_MAX_DIGITS = 2;
+const SCORE_AUTO_ADVANCE_DELAY_MS = 550;
+const STORAGE_WRITE_DELAY_MS = 300;
 
 const colors = {
   bg: "#e3e7eb",
@@ -140,7 +148,7 @@ const teeDefinitions = [
 
 const id = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => buildLocalDateValue();
 const defaultGroups = () => [
   { id: id("group"), name: "Group 1" },
   { id: id("group"), name: "Group 2" },
@@ -323,43 +331,8 @@ function compareWorstPlayers(
   return a.name.localeCompare(b.name);
 }
 
-function shuffle<T>(items: T[]) {
-  const clone = [...items];
-  for (let index = clone.length - 1; index > 0; index -= 1) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
-    const current = clone[index];
-    clone[index] = clone[randomIndex];
-    clone[randomIndex] = current;
-  }
-  return clone;
-}
-
 function syncGhosts(players: Player[], groups: Group[], current: Record<string, string | null> = {}, force = false) {
-  const next: Record<string, string | null> = {};
-  const groupSizes = new Map(
-    groups.map((group) => [group.id, players.filter((player) => player.groupId === group.id).length]),
-  );
-  const activeGroupSizes = [...groupSizes.values()].filter((size) => size > 0);
-  const mixedThreeAndFour = activeGroupSizes.includes(3) && activeGroupSizes.includes(4);
-
-  if (!mixedThreeAndFour) {
-    return next;
-  }
-
-  const threeBallGroups = groups.filter((group) => groupSizes.get(group.id) === 3);
-  const eligibleGhostIds = players.map((player) => player.id);
-  const existingSharedGhost = !force
-    ? threeBallGroups
-        .map((group) => current[group.id] ?? null)
-        .find((ghostId): ghostId is string => !!ghostId && eligibleGhostIds.includes(ghostId))
-    : null;
-  const sharedGhost = existingSharedGhost ?? shuffle(eligibleGhostIds)[0] ?? null;
-
-  threeBallGroups.forEach((group) => {
-    next[group.id] = sharedGhost;
-  });
-
-  return next;
+  return syncSharedGhosts(players, groups, current, force);
 }
 
 function cloneRound(round: RoundState): RoundState {
@@ -548,11 +521,7 @@ function blankRound(): RoundState {
 }
 
 function formatDate(value: string) {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return formatRoundDate(value);
 }
 
 function groupLabel(size: number) {
@@ -732,6 +701,7 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const persist = async () => {
       try {
         await FileSystem.writeAsStringAsync(
@@ -752,9 +722,14 @@ export default function App() {
         }
       }
     };
-    void persist();
+    timeoutId = setTimeout(() => {
+      void persist();
+    }, STORAGE_WRITE_DELAY_MS);
     return () => {
       cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
   }, [round, savedCourses, savedPlayerProfiles, savedRounds, storageReady]);
 
@@ -977,6 +952,9 @@ export default function App() {
   const totalParValue = selectedTee.course.reduce((sum, hole) => sum + hole.par, 0);
   const totalYardageValue = selectedTee.course.reduce((sum, hole) => sum + hole.yardage, 0);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const groupEntryScrollRefs = useRef<Record<string, ScrollView | null>>({});
+  const groupEntryStripWidths = useRef<Record<string, number>>({});
+  const groupEntryHoleLayouts = useRef<Record<string, Record<number, { x: number; width: number }>>>({});
   const playerEntryScrollRef = useRef<ScrollView | null>(null);
   const playerEntryRowOffsets = useRef<Record<number, number>>({});
   const pendingGroupFocusKey = useRef<string | null>(null);
@@ -1165,6 +1143,11 @@ export default function App() {
       return;
     }
 
+    if (sanitized !== "1") {
+      advanceFromScoreInput(orderedKeys, currentKey, onComplete);
+      return;
+    }
+
     pendingAdvanceTimeouts.current[currentKey] = setTimeout(() => {
       if (!inputRefs.current[currentKey]?.isFocused?.()) {
         clearPendingAdvance(currentKey);
@@ -1172,7 +1155,7 @@ export default function App() {
       }
 
       advanceFromScoreInput(orderedKeys, currentKey, onComplete);
-    }, 550);
+    }, SCORE_AUTO_ADVANCE_DELAY_MS);
   };
 
   useEffect(
@@ -1201,6 +1184,33 @@ export default function App() {
   const getHoleNumberFromPlayerEntryKey = (key: string) => {
     const holeNumber = Number(key.split(":")[2]);
     return Number.isFinite(holeNumber) ? holeNumber : null;
+  };
+
+  const rememberGroupEntryHoleLayout = (groupId: string, holeNumber: number, x: number, width: number) => {
+    if (!groupEntryHoleLayouts.current[groupId]) {
+      groupEntryHoleLayouts.current[groupId] = {};
+    }
+
+    groupEntryHoleLayouts.current[groupId][holeNumber] = { x, width };
+  };
+
+  const scrollGroupEntryHoleIntoView = (groupId: string, holeNumber: number, animated = true) => {
+    const scrollView = groupEntryScrollRefs.current[groupId];
+    const holeLayout = groupEntryHoleLayouts.current[groupId]?.[holeNumber];
+    if (!scrollView || !holeLayout) {
+      return;
+    }
+
+    const visibleWidth = groupEntryStripWidths.current[groupId];
+    const targetX =
+      visibleWidth && visibleWidth > holeLayout.width
+        ? Math.max(0, holeLayout.x - (visibleWidth - holeLayout.width) / 2)
+        : Math.max(0, holeLayout.x - 16);
+
+    scrollView.scrollTo({
+      x: targetX,
+      animated,
+    });
   };
 
   const scrollPlayerEntryInputIntoView = (key: string) => {
@@ -1235,6 +1245,22 @@ export default function App() {
       clearTimeout(timeoutId);
     };
   }, [groupEntryHoleByGroup]);
+
+  useEffect(() => {
+    if (tab !== "live" || liveSection !== "entry" || scoreEntryMode !== "group") {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      Object.entries(groupEntryHoleByGroup).forEach(([groupId, holeNumber]) => {
+        scrollGroupEntryHoleIntoView(groupId, holeNumber, true);
+      });
+    }, 0);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [groupEntryHoleByGroup, liveSection, scoreEntryMode, tab]);
 
   const clearCurrentRound = () => {
     setRound(blankRound());
@@ -2214,13 +2240,35 @@ export default function App() {
                               <Text style={styles.meta}>Hole {groupSelectedHole} of 18</Text>
                               <Text style={styles.meta}>Swipe left for next hole or right for previous hole.</Text>
                             </View>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                            <ScrollView
+                              ref={(ref) => {
+                                groupEntryScrollRefs.current[group.id] = ref;
+                              }}
+                              horizontal
+                              showsHorizontalScrollIndicator={false}
+                              contentContainerStyle={styles.chipRow}
+                              onLayout={(event) => {
+                                groupEntryStripWidths.current[group.id] = event.nativeEvent.layout.width;
+                                scrollGroupEntryHoleIntoView(group.id, groupSelectedHole, false);
+                              }}
+                            >
                               {selectedTee.course.map((hole) => {
                                 const active = hole.number === groupSelectedHole;
                                 return (
                                   <Pressable
                                     key={`${group.id}-${hole.number}`}
                                     onPress={() => setGroupEntryHole(group.id, hole.number)}
+                                    onLayout={(event) => {
+                                      rememberGroupEntryHoleLayout(
+                                        group.id,
+                                        hole.number,
+                                        event.nativeEvent.layout.x,
+                                        event.nativeEvent.layout.width,
+                                      );
+                                      if (active) {
+                                        scrollGroupEntryHoleIntoView(group.id, hole.number, false);
+                                      }
+                                    }}
                                     style={[styles.holeChip, active && styles.chipActive]}
                                   >
                                     <Text style={[styles.chipText, active && styles.chipTextActive]}>{hole.number}</Text>
@@ -2254,13 +2302,13 @@ export default function App() {
                                   groupEntryKeys,
                                   `group:${group.id}:${groupSelectedHole}:${player.id}`,
                                   advanceToNextGroupHole,
-                                  1,
+                                  SCORE_INPUT_MAX_DIGITS,
                                 )
                               }
                               keyboardType="number-pad"
                               placeholder="Score"
                               placeholderTextColor={colors.placeholder}
-                              maxLength={1}
+                              maxLength={SCORE_INPUT_MAX_DIGITS}
                               blurOnSubmit={false}
                               style={[styles.scoreInput, player.scores[groupCurrentHole.number] === BLOB_SCORE && styles.scoreInputBlob]}
                             />
@@ -2394,13 +2442,13 @@ export default function App() {
                                         playerEntryKeys,
                                         inputKey,
                                         undefined,
-                                        1,
+                                        SCORE_INPUT_MAX_DIGITS,
                                       )
                                     }
                                     keyboardType="number-pad"
                                     placeholder="Score"
                                     placeholderTextColor={colors.placeholder}
-                                    maxLength={1}
+                                    maxLength={SCORE_INPUT_MAX_DIGITS}
                                     blurOnSubmit={false}
                                     onFocus={() => {
                                       setFocusedPlayerEntryKey(inputKey);

@@ -8,9 +8,9 @@ This patch line is already configured with the live iOS app identity in `app.jso
 
 - Bundle identifier: `com.podavies.fairway`
 - App Store Connect app id: `6761051666`
-- Planned patch build: `1.5.3 (20)`
+- Planned patch build: `1.5.4 (21)`
 
-Keep that bundle identifier unchanged for `1.5.3` builds so they continue to land in the existing Fairway TestFlight app.
+Keep that bundle identifier unchanged for `1.5.4` builds so they continue to land in the existing Fairway TestFlight app.
 
 ## What is already configured
 

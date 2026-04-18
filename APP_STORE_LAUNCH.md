@@ -28,13 +28,13 @@ Fairway is designed for simple, practical rollup scoring without spreadsheets or
 
 Build your rollup, customise your course, and log Stableford scores in one place.
 
-## What's New in 1.5.3
+## What's New in 1.5.4
 
-Fairway 1.5.3 refreshes the app look and smooths live scoring.
+Fairway 1.5.4 tightens scoring accuracy and smooths patch-line testing.
 
-- New icon and updated in-app colours inspired by V2
-- Group score entry now starts the next hole on the first player
-- Player score entry shows clearer running totals, including the front nine after hole 9
+- Mixed-field ghost scoring now avoids double-counting a player inside the same 3-ball
+- Two-digit gross scores are supported again in both score-entry modes
+- Round dates now stay aligned with the device's local calendar day
 
 ## Keywords
 
